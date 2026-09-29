@@ -45,7 +45,9 @@ export type InboundEvent = { kind: "message"; message: InboundMessage };
  *   hears an event. On a channel that pairs accounts (Telegram, Discord,
  *   Feishu), an account the guardian has not approved never reaches a
  *   subscriber, and neither does a pairing code. Any other channel delivers
- *   every sender, and a subscriber decides what a stranger gets.
+ *   every sender, and a subscriber decides what a stranger gets. An admission
+ *   that has not decided within fifteen seconds fails closed: that message is
+ *   not delivered, and the conversation's next message is admitted in order.
  * - **R2 Answerable only.** An event is something a subscriber may answer: not
  *   Rome's own sends, not the guardian's own messages from another device, not
  *   reactions, edits or frames with no text and no attachments. The complete
@@ -53,9 +55,19 @@ export type InboundEvent = { kind: "message"; message: InboundMessage };
  * - **R3 Live, at most once.** Nothing is acknowledged or replayed. An event
  *   that arrives with no subscriber, or while the channel is not receiving, is
  *   not delivered later; a subscriber catches up by reading `messages`.
- * - **R4 Fan-out.** Every subscriber hears every event. Events are dispatched
- *   in arrival order and handlers run concurrently, so one slow or failing
- *   handler holds up no other.
+ * - **R4 Fan-out, ordered per conversation.** Every subscriber hears every
+ *   event. A subscriber hears one conversation's events one at a time, in
+ *   arrival order: its handler for an event starts after its
+ *   handler for the previous event in that conversation settles. Different
+ *   conversations and different subscribers never wait on each other, so one
+ *   slow or failing handler holds up only its own conversation for its own
+ *   subscriber. A handler that never settles stops that conversation for that
+ *   subscriber for good, so a subscriber settles every event it takes; one
+ *   still running after ten minutes is logged, and so is a conversation with
+ *   twenty events waiting. A conversation holds at most a hundred waiting
+ *   events per subscriber, and the oldest is dropped and logged past that (R3).
+ *   Events still waiting when a subscription ends are dropped (R3); a handler
+ *   already running keeps running.
  * - **R5 Durable subscription.** A subscription outlives a reconnect of
  *   whatever backs the channel.
  */

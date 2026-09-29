@@ -113,6 +113,38 @@ describe("channel pairing approvals", () => {
     expect(testDb.db.select().from(channelMappings).all()).toHaveLength(1);
   });
 
+  it("decides admission without waiting for its reply to send", async () => {
+    seedConnection("telegram");
+    // A reply that never settles must not hold up the admission decision, which
+    // gates every later message in the conversation.
+    const send = rs.fn<TalkRouter["send"]>(() => new Promise(() => {}));
+    const router = { send, feature: () => null } as unknown as TalkRouter;
+    const admit = createPairingAdmission({
+      talkGrants,
+      approvalsRepo: repo,
+      personMappingRepo: new PersonMappingRepository(testDb.db),
+    });
+
+    const admitted = await admit(
+      "connection",
+      "telegram",
+      {
+        senderId: "123",
+        conversationId: "group" as ConversationId,
+        messageId: "request",
+        text: "hello",
+        attachments: [],
+        timestamp: new Date(),
+        thread: { kind: "group" },
+        addressing: "mention",
+      },
+      router,
+    );
+
+    expect(admitted).toBe(false);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["telegram", "123", "Alice [Smith]", "[@Alice \\[Smith\\]](tg://user?id=123) (`123`)"],
     ["discord", "123", "@everyone", "<@123> (`123`)"],
