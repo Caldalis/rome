@@ -67,8 +67,8 @@ Use a durable backend pattern instead:
   React component, fetch request, or open dashboard tab to remain alive for the
   work to finish.
 - Update the persisted record as the task progresses and when it completes or
-  fails. The UI should render from that record, with an explicit refresh or
-  status view, so the guardian can come back later and see what happened.
+  fails. The UI should render from that record and pick up its progress on
+  its own, so the guardian can come back later and see what happened.
 
 ## Frontend Design Guideline
 
@@ -147,7 +147,8 @@ Reuse the same patterns across an app so the user learns them once.
 
 - Destructive actions live in the destructive variant or use `text-destructive` — never just a red className.
 - Selection state is signaled with token-based emphasis (e.g. `border-primary bg-accent`), not colored shadows or glowing rings.
-- Asynchronous actions disable their trigger and reflect progress (label change, spinning icon). Avoid `alert()` and avoid implicit background polling loops — prefer an explicit refresh affordance.
+- Asynchronous actions disable their trigger and reflect progress (label change, spinning icon). Avoid `alert()`.
+- Data on screen stays current without the guardian asking. Refetch on an interval while the page is visible and when it regains focus, as the app template does. Do not add a Refresh button. When an update fails, keep the last good data on screen and show a warning. Show an error only when there is no data to show.
 - Modal surfaces are the one place where a backdrop is acceptable; keep them narrow and focused on a single task.
 
 ### 8. Dark mode is a first-class requirement
