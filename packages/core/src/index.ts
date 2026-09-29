@@ -252,9 +252,9 @@ async function main() {
   const sentinelLogRepo = new SentinelLogRepository(db);
   // The personal WeChat account contributes a people-timeline source only when
   // the connection is enabled; its store is the client's own database, read live.
-  const wechatUserReader = config.wechatUserEnabled
-    ? new WechatUserReader(new WechatUserRuntime())
-    : undefined;
+  // The channel list and the Connection's Talk share this one client runtime.
+  const wechatUserRuntime = config.wechatUserEnabled ? new WechatUserRuntime() : undefined;
+  const wechatUserReader = wechatUserRuntime ? new WechatUserReader(wechatUserRuntime) : undefined;
   const approvalsRepo = new ApprovalsRepository(db, undefined, personMappingRepo);
   const settingsRepo = new SettingsRepository(db);
   const computerUse = new ComputerUseService(settingsRepo);
@@ -1020,9 +1020,10 @@ async function main() {
     // The Rome Cloud-OAuth conferral setups (github/slack/google) read/write the
     // oauth_pending_attempts table for the begin-redirect + return-leg redeem.
     db,
-    // The personal WeChat connection is opt-in; its key recovery runs a local
-    // debugger in this container, needing no host execution.
-    wechatUserEnabled: config.wechatUserEnabled,
+    // The personal WeChat connection is opt-in: its runtime exists only when
+    // config `wechatUserEnabled` is on, and its presence registers the
+    // connection. Its key recovery runs a local debugger in this container.
+    ...(wechatUserRuntime ? { wechatUserRuntime } : {}),
   });
   // Built after every descriptor is registered: each service with a Talk backs
   // its channel's send and inbound ports.
