@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, rs } from "@rstest/core";
 import type {
   ActionEngineLike,
+  Channel,
   ChatStopHandler,
   ConversationId,
   ConversationSettingsControl,
+  InboundEvent,
   InboundMessage,
   TalkFeatureMap,
   TalkFeatureName,
@@ -56,8 +58,8 @@ function snapshot(
   };
 }
 
-function createHarness() {
-  const handlers = new Map<string, (message: InboundMessage) => Promise<void>>();
+function createHarness(options: ConstructorParameters<typeof ChannelMessageHook>[5] = {}) {
+  const handlers = new Map<string, (event: InboundEvent) => Promise<void>>();
   const features = new Map<string, Partial<TalkFeatureMap>>();
   const run = rs.fn(async () => ({ status: "ok" as const }));
   const actionEngine = { run } as unknown as ActionEngineLike;
@@ -67,28 +69,58 @@ function createHarness() {
   const conversationSettings = { get } as unknown as ConversationSettingsControl;
   const stop = rs.fn(async () => ({ status: "stop_requested" as const, turnId: "turn-1" }));
   const chatStop: ChatStopHandler = stop;
-  const send = rs.fn(async (_connectionId: string, conversationId: ConversationId) => ({
-    conversationId,
-  }));
-  const talkRouter: TalkRouter = {
-    list: async () => [
-      { connectionId: TELEGRAM_ID, service: "telegram" },
-      { connectionId: WHATSAPP_ID, service: "whatsapp" },
-    ],
-    subscribe: (connectionId, handler) => {
-      handlers.set(connectionId, handler);
-      return () => handlers.delete(connectionId);
+  const send = rs.fn(
+    async (_connectionId: string, conversationId: ConversationId, _outgoing?: unknown) => ({
+      conversationId,
+    }),
+  );
+  const feature = <K extends TalkFeatureName>(connectionId: string, name: K) =>
+    (features.get(connectionId)?.[name] ?? null) as TalkFeatureMap[K] | null;
+  const talkRouter = { feature } as unknown as TalkRouter;
+  // One channel per Connection, as the channel list builds them.
+  const channel = (name: string, connectionId: string): Channel => ({
+    name,
+    send: {
+      send: (conversationId, outgoing) => send(connectionId, conversationId, outgoing),
     },
-    send,
-    feature<K extends TalkFeatureName>(connectionId: string, name: K) {
-      return (features.get(connectionId)?.[name] ?? null) as TalkFeatureMap[K] | null;
+    inbound: {
+      subscribe: (handler) => {
+        handlers.set(connectionId, handler);
+        return () => handlers.delete(connectionId);
+      },
+      get media() {
+        return feature(connectionId, "inboundMedia");
+      },
     },
-  };
-  const hook = new ChannelMessageHook(actionEngine, talkRouter, conversationSettings, chatStop);
-  const emit = async (connectionId: string, incoming: InboundMessage) => {
+  });
+  const channels = [channel("telegram", TELEGRAM_ID), channel("whatsapp", WHATSAPP_ID)];
+  const hook = new ChannelMessageHook(
+    actionEngine,
+    talkRouter,
+    conversationSettings,
+    chatStop,
+    channels,
+    options,
+  );
+  // A conversation's events reach the handler one at a time, each after the
+  // previous one settles, as rule R4 of `ChannelInbound` requires of a channel.
+  const tails = new Map<string, Promise<void>>();
+  const emit = (connectionId: string, incoming: InboundMessage): Promise<void> => {
     const handler = handlers.get(connectionId);
-    if (!handler) throw new Error(`no subscription for ${connectionId}`);
-    await handler(incoming);
+    if (!handler) return Promise.reject(new Error(`no subscription for ${connectionId}`));
+    const key = `${connectionId}:${incoming.conversationId}`;
+    const handled = (tails.get(key) ?? Promise.resolve()).then(() =>
+      handler({
+        kind: "message",
+        message: incoming,
+        ref: { connectionId, conversationId: incoming.conversationId },
+      }),
+    );
+    tails.set(
+      key,
+      handled.catch(() => {}),
+    );
+    return handled;
   };
 
   return { hook, run, get, features, emit, stop, send };
@@ -295,5 +327,37 @@ describe("ChannelMessageHook", () => {
     await harness.hook.register();
     await harness.emit(TELEGRAM_ID, message({ text: "after reload" }));
     expect(harness.run).toHaveBeenCalledTimes(1);
+  });
+  it("hears a /stop in a chat whose turn is still running", async () => {
+    harness.run.mockImplementationOnce(() => new Promise(() => {}));
+
+    // The turn never finishes; the conversation is still free for the next
+    // message once the turn is dispatched.
+    await harness.emit(TELEGRAM_ID, message({ messageId: "long turn" }));
+    await harness.emit(
+      TELEGRAM_ID,
+      message({ messageId: "stop", text: "/stop", thread: { kind: "dm" } }),
+    );
+
+    expect(harness.stop).toHaveBeenCalledTimes(1);
+  });
+  it("reports a turn still running past the threshold, and not one that finished", async () => {
+    const warn = rs.fn();
+    const slow = createHarness({ slowTurnMs: 20, log: { warn } });
+    await slow.hook.register();
+    slow.run.mockImplementationOnce(() => new Promise(() => {}));
+
+    await slow.emit(TELEGRAM_ID, message({ messageId: "hung" }));
+    await slow.emit(TELEGRAM_ID, message({ messageId: "quick" }));
+
+    await rs.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith("message turn still running", {
+        service: "telegram",
+        messageId: "hung",
+        runningMs: 20,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

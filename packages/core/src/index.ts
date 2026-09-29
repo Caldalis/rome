@@ -1046,6 +1046,7 @@ async function main() {
         talkRouter,
         conversationSettings,
         chatStop,
+        channels,
       });
       if (loadedHook) {
         messageHook = loadedHook;
@@ -1067,20 +1068,24 @@ async function main() {
       }
     }
   }
+  // The inbox hook subscribes to every channel that can receive, and a
+  // channel's subscription follows whatever backs it. An older hook subscribes
+  // per Connection instead, and `register()` runs before the registry loads, so
+  // unlocks still reach `registerConnection` until it is removed from the
+  // contract. The inbox hook's is a no-op.
   await messageHook.register();
   connectionRegistry.onUnlocked("talk", (connection) => {
     messageHook.registerConnection(connection.id, connection.service);
   });
   // App-keys refreshes recreate this hook: it is instantiated once and held by
-  // the subscription closures above, so an env value captured in its module
-  // graph would otherwise outlive the key edit. The let-binding is the single
-  // handle — the onUnlocked callback reads it at call time, so a swap re-routes
-  // future unlocks, and register() on the fresh instance re-subscribes the
-  // already-unlocked connections via talkRouter.list().
+  // the channels' subscriptions, so an env value captured in its module graph
+  // would otherwise outlive the key edit. The let-binding is the single handle,
+  // and register() on the fresh instance re-subscribes every channel that can
+  // receive.
   const reloadChannelMessageHook = messageHandlerRegistered
     ? createChannelMessageHookReloader({
         catalog: appCatalog,
-        deps: { actionEngine, talkRouter, conversationSettings, chatStop },
+        deps: { actionEngine, talkRouter, conversationSettings, chatStop, channels },
         getCurrent: () => messageHook,
         setCurrent: (hook) => {
           messageHook = hook;
