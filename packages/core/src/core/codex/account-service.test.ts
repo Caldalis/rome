@@ -235,6 +235,22 @@ describe("SharedCodexAccountService", () => {
     service.close();
   });
 
+  it.each([
+    "account/updated",
+    "account/rateLimits/updated",
+  ])("preserves %s notifications and unsubscribes on close", (notification) => {
+    const rpc = new FakeAccountRpc();
+    const service = createService(rpc);
+    const changed = rs.fn();
+    service.onAccountChanged(changed);
+
+    rpc.notify(notification, {});
+    expect(changed).toHaveBeenCalledTimes(1);
+    service.close();
+    rpc.notify(notification, {});
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+
   it("logs out through the shared RPC and clears an active login", async () => {
     const rpc = new FakeAccountRpc();
     rpc.queue("account/login/start", {

@@ -576,19 +576,6 @@ async function main() {
   const lifecycleDispatcher = createAgentLifecycleDispatcher({
     appRuntimeServices: lifecycleAppRuntimeServices,
   });
-  const unsubscribeAIToolTurnFinished = lifecycleDispatcher.onFinished((event) => {
-    // Provider failures update auth/quota state directly. Do not immediately
-    // replace that stronger runtime signal with a usage probe that may lag it.
-    if (event.status === "error") return;
-    const provider = event.output.accounting?.provider;
-    if (provider !== "openai" && provider !== "anthropic") return;
-    void aiToolState.refresh(provider).catch((err) => {
-      log.warn("AI tool state refresh after turn failed", {
-        provider,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
-  });
   // Turn-middleware onion. Shares the same app-runtime services as the
   // lifecycle dispatcher (the `agentRunner` field is filled in below, before
   // any hook is loaded), so a scripted-conversation middleware can summon real
@@ -1587,7 +1574,6 @@ async function main() {
     capabilityDiscovery.stop();
     shutdownLog.info("capability discovery stopped");
 
-    unsubscribeAIToolTurnFinished();
     unsubscribeCodexAccountChanged();
     codexAccountService.close();
     shutdownLog.info("Codex account service stopped");
