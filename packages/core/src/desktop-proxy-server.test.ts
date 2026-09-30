@@ -10,16 +10,24 @@ afterEach(() => {
   rs.unstubAllEnvs();
 });
 
+function wechatOwnDisplay() {
+  rs.stubEnv("WECHAT_USER_ENABLED", "true");
+  rs.stubEnv("DISPLAY", ":99");
+  rs.stubEnv("WECHAT_USER_DISPLAY", ":100");
+  rs.stubEnv("ROME_NOVNC_PORT", "6080");
+  rs.stubEnv("ROME_WECHAT_NOVNC_PORT", "6081");
+}
+
 describe("desktopUpstream", () => {
-  it("sends /desktop-proxy/wechat to WeChat's websockify and the rest to the shared one", () => {
-    rs.stubEnv("WECHAT_USER_ENABLED", "true");
-    rs.stubEnv("DISPLAY", ":99");
-    rs.stubEnv("WECHAT_USER_DISPLAY", ":100");
-    rs.stubEnv("ROME_NOVNC_PORT", "6080");
-    rs.stubEnv("ROME_WECHAT_NOVNC_PORT", "6081");
+  it("sends a named desktop's paths to its websockify and the shared paths to the shared one", () => {
+    wechatOwnDisplay();
     expect(desktopUpstream("/desktop-proxy/websockify")).toEqual({
       port: 6080,
       path: "/websockify",
+    });
+    expect(desktopUpstream("/desktop-proxy/websockify?x=1")).toEqual({
+      port: 6080,
+      path: "/websockify?x=1",
     });
     expect(desktopUpstream("/desktop-proxy")).toEqual({ port: 6080, path: "/" });
     expect(desktopUpstream("/desktop-proxy/wechat/websockify")).toEqual({
@@ -27,33 +35,34 @@ describe("desktopUpstream", () => {
       path: "/websockify",
     });
     expect(desktopUpstream("/desktop-proxy/wechat")).toEqual({ port: 6081, path: "/" });
-    expect(desktopUpstream("/desktop-proxy/wechatty")).toEqual({ port: 6080, path: "/wechatty" });
+    expect(desktopUpstream("/desktop-proxy/wechat?token=1")).toEqual({
+      port: 6081,
+      path: "/?token=1",
+    });
   });
 
-  it("has no WeChat upstream while WeChat is disabled, even with a display set", () => {
-    rs.stubEnv("WECHAT_USER_ENABLED", "false");
-    rs.stubEnv("DISPLAY", ":99");
-    rs.stubEnv("WECHAT_USER_DISPLAY", ":100");
-    expect(desktopUpstream("/desktop-proxy/wechat/websockify")).toBeNull();
+  it("has no upstream for a segment that names no desktop", () => {
+    wechatOwnDisplay();
+    for (const path of [
+      "/desktop-proxy/notes/websockify",
+      "/desktop-proxy/Wechat/websockify",
+      "/desktop-proxy/my_desk",
+      "/desktop-proxy/wechatty",
+    ]) {
+      expect(desktopUpstream(path)).toBeNull();
+    }
   });
 
-  it("has no WeChat upstream for a display the shared rule rejects", () => {
+  it("has no wechat upstream while WeChat has no display of its own", () => {
     rs.stubEnv("WECHAT_USER_ENABLED", "true");
-    rs.stubEnv("DISPLAY", ":99");
-    rs.stubEnv("WECHAT_USER_DISPLAY", ":99");
-    expect(desktopUpstream("/desktop-proxy/wechat/websockify")).toBeNull();
-  });
-
-  it("has no WeChat upstream while no WeChat display is configured", () => {
     rs.stubEnv("WECHAT_USER_DISPLAY", "");
     expect(desktopUpstream("/desktop-proxy/wechat/websockify")).toBeNull();
-    expect(desktopUpstream("/desktop-proxy/wechat")).toBeNull();
     expect(desktopUpstream("/desktop-proxy/websockify")).toMatchObject({ path: "/websockify" });
   });
 });
 
 describe("attachDesktopProxy", () => {
-  it("refuses a WeChat websocket while no WeChat display is configured", async () => {
+  it("refuses a websocket for a desktop the table does not have", async () => {
     rs.stubEnv("WECHAT_USER_DISPLAY", "");
     const testDb = createTestDb();
     const server = createServer();
