@@ -297,6 +297,9 @@ function extractToolResultMessages(
       tool: normalizeToolName(toolUseNames.get(block.tool_use_id) ?? "unknown"),
       output,
       endedAt: new Date().toISOString(),
+      // The Messages API marks a failed tool result with `is_error`; its
+      // absence means success.
+      isError: block.is_error === true,
     };
   });
   if (contentResults.length > 0) {
@@ -305,6 +308,8 @@ function extractToolResultMessages(
 
   const parentToolUseId = message.parent_tool_use_id;
   if (parentToolUseId && "tool_use_result" in message) {
+    // `tool_use_result` has no documented failure signal, so this result
+    // leaves `isError` unset ("the producer cannot tell").
     return [
       {
         type: "tool_result",
