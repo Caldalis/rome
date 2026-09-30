@@ -1494,6 +1494,13 @@ export interface ChannelMessage extends InboundMessage {
   direction: "inbound" | "outbound";
 }
 
+/**
+ * The sender id a WhatsApp group line carries when the channel recorded no
+ * sender for it: the chat's own id names the group, not whoever spoke in it.
+ * A reader that shows such a line under a name picks its own fallback for it.
+ */
+export const WHATSAPP_UNKNOWN_SENDER = "whatsapp:unknown";
+
 /** Exact provider-neutral chat command recognized before an agent turn. */
 export function isStopCommand(text: string): boolean {
   return text.trim().toLowerCase() === "/stop";
@@ -1532,12 +1539,17 @@ export interface MessageReceipt {
   parts?: Array<{ messageId: string; kind: string }>;
 }
 
+/**
+ * The platform's own history of a Connection's conversations: at most `limit`
+ * of them at or after `since`, oldest first, each saying which channel carried
+ * it and which way it went.
+ */
 export interface TalkHistory {
   query(input: {
     conversationId?: ConversationId;
     since?: Date;
     limit?: number;
-  }): Promise<InboundMessage[]>;
+  }): Promise<ChannelMessage[]>;
 }
 
 export interface TalkInboundMedia {

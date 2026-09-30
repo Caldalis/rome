@@ -1,5 +1,6 @@
 import type {
   Attachment,
+  ChannelMessage,
   ConversationId,
   InboundMessage,
   MessageReceipt,
@@ -9,6 +10,7 @@ import type {
   TalkHistory,
   TalkInboundMedia,
 } from "@rome-os/app-runtime";
+import type { HistoryLine } from "../../channels/types.js";
 
 /** Adapters still normalize their provider SDK events into the established
  * internal shape. The integration owns the one-way projection into Talk's
@@ -130,18 +132,55 @@ export function addressIsConversationFeature(): TalkDirectMessaging {
   };
 }
 
-export function historyFeature(adapter: {
-  fetchHistory(conversationId: string | null, windowHours: number): Promise<NormalizedMessage[]>;
-}): TalkHistory {
+/**
+ * History over an adapter's own read, as the channel's record: the channel's
+ * name, and which way each message went. `isOwn` says which lines the account
+ * the Connection speaks as wrote. Absent, every line is one Rome was told.
+ */
+export function historyFeature(
+  adapter: {
+    fetchHistory(conversationId: string | null, windowHours: number): Promise<NormalizedMessage[]>;
+  },
+  record: { channel: string; isOwn?(message: NormalizedMessage): boolean },
+): TalkHistory {
+  return historyLinesFeature(
+    {
+      async fetchHistoryLines(conversationId, windowHours) {
+        const messages = await adapter.fetchHistory(conversationId, windowHours);
+        return messages.map((message) => ({ message, own: record.isOwn?.(message) ?? false }));
+      },
+    },
+    record.channel,
+  );
+}
+
+/** History over an adapter whose read says itself which lines it wrote. */
+export function historyLinesFeature(
+  adapter: {
+    fetchHistoryLines(conversationId: string | null, windowHours: number): Promise<HistoryLine[]>;
+  },
+  channel: string,
+): TalkHistory {
   return {
     async query(input) {
-      const messages = await adapter.fetchHistory(
+      const lines = await adapter.fetchHistoryLines(
         input.conversationId ?? null,
         historyWindowHours(input.since),
       );
-      return messages.slice(0, historyQueryLimit(input.limit)).map(toInboundMessage);
+      return lines
+        .slice(0, historyQueryLimit(input.limit))
+        .map((line) => toHistoryMessage(line.message, channel, line.own));
     },
   };
+}
+
+/** One line of a Connection's history as the channel's record. */
+export function toHistoryMessage(
+  message: NormalizedMessage,
+  channel: string,
+  own = false,
+): ChannelMessage {
+  return { ...toInboundMessage(message), channel, direction: own ? "outbound" : "inbound" };
 }
 
 export function typingActivityFeature(adapter: {

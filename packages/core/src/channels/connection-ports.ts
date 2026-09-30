@@ -1,8 +1,8 @@
 /**
- * The `send` and `inbound` ports of a channel a Connection backs. The channel
- * is named by the service; the Connection that backs it is looked up when a
- * port is used, so a port outlives any one Connection epoch.
- * Contract: `Channel` and `Inbound` (channel.ts).
+ * The `send`, `inbound` and `messages` ports of a channel a Connection backs.
+ * The channel is named by the service; the Connection that backs it is looked
+ * up when a port is used, so a port outlives any one Connection epoch.
+ * Contract: `Channel` and `Inbound` (channel.ts), `Messages` (messages.ts).
  */
 
 import type { InboundMessage, TalkDirectMessaging, TalkRouter } from "@rome-os/app-runtime";
@@ -15,6 +15,7 @@ import {
   type InboundEvent,
 } from "./channel.js";
 import { ConversationBuffers } from "./conversation-buffer.js";
+import { MAX_QUERY_LIMIT, queryLimit, type Messages } from "./messages.js";
 
 const log = createLogger("channel-ports");
 
@@ -31,6 +32,7 @@ export interface ConnectionPortsDeps {
 export interface ConnectionPorts {
   send: ChannelSend | null;
   inbound: Inbound | null;
+  messages: Messages | null;
 }
 
 /** The ports a service's Talk backs, or null when the service has no Talk. */
@@ -43,6 +45,57 @@ export function connectionPorts(
   return {
     send: talker.sends === false ? null : connectionSend(deps, service),
     inbound: talker.receives === false ? null : connectionInbound(deps, service),
+    messages: talker.history === true ? connectionMessages(deps, service) : null,
+  };
+}
+
+/**
+ * What was said on a channel with no store of its own, read through its
+ * Connection's history. No store answers per-account reads for it, so there is
+ * no `byAccount`: a People timeline reads these channels from Rome's own
+ * transcript instead.
+ *
+ * The history answers oldest first, within the Connection's own caps, and
+ * reads a window rounded out to whole hours; this port keeps what falls at or
+ * after `since` and answers newest first, as every `query` does. The history
+ * keeps the oldest thousand lines of a window that holds more, so such a
+ * window answers the newest of those.
+ *
+ * A query naming no `since` reads the last {@link LIVE_DEFAULT_WINDOW_MS}. A
+ * wider default would not answer newer lines: some platforms' reads (Discord's)
+ * keep the oldest lines after their cutoff, so reaching further back trades
+ * the newest lines for older ones. A caller wanting more names a `since`.
+ *
+ * Every query is a live platform read, and nothing here caches or throttles
+ * it. One naming no conversation is the costly kind: a Telegram account reads
+ * its fifty newest chats and fifty lines of each, Discord every channel of
+ * every server the bot is in, and email hydrates up to a thousand message
+ * bodies. A caller that reads often names a conversation, or keeps what it
+ * read. Rome's own `fetch_channel_history` does not read through this port.
+ */
+export const LIVE_DEFAULT_WINDOW_MS = 24 * 3_600_000;
+
+function connectionMessages(deps: ConnectionPortsDeps, service: string): Messages {
+  return {
+    async query({ conversationId, since, limit }) {
+      const connectionId = connectionIdFor(deps, service);
+      if (!connectionId) throw new ChannelNotConnected(service);
+      const history = deps.router.feature(connectionId, "history");
+      // A Connection whose Talk is not built yet (a credential missing or
+      // degraded) backs nothing, the same as no Connection at all.
+      if (!history) throw new ChannelNotConnected(service);
+      const from = since ?? new Date(Date.now() - LIVE_DEFAULT_WINDOW_MS);
+      const read = await history.query({
+        ...(conversationId ? { conversationId } : {}),
+        since: from,
+        limit: MAX_QUERY_LIMIT,
+      });
+      return read
+        .filter((message) => message.timestamp.getTime() >= from.getTime())
+        .reverse()
+        .slice(0, queryLimit(limit));
+    },
+    byAccount: null,
   };
 }
 

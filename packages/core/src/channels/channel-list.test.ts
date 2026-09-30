@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import type {
+  ChannelMessage,
   ConversationId,
   InboundMessage,
   TalkActivity,
   TalkDirectMessaging,
+  TalkHistory,
 } from "@rome-os/app-runtime";
 import { ConnectionRegistry } from "../connections/registry.js";
 import { DrizzleGrantLedger } from "../connections/ledger-db.js";
@@ -35,9 +37,10 @@ function message(overrides: Partial<InboundMessage> = {}): InboundMessage {
 /** A pasted-token service whose every talker epoch is recorded. */
 function talkService(
   service: string,
-  ports: { sends?: boolean; receives?: boolean } = {},
+  ports: { sends?: boolean; receives?: boolean; history?: boolean } = {},
   direct: TalkDirectMessaging | null = null,
   activity: TalkActivity | null = null,
+  history: TalkHistory | null = null,
 ): { descriptor: ConnectionDescriptor; epochs: Array<{ deliver?: (m: InboundMessage) => void }> } {
   const epochs: Array<{ deliver?: (m: InboundMessage) => void }> = [];
   return {
@@ -65,7 +68,9 @@ function talkService(
                   ? direct
                   : name === "activity"
                     ? activity
-                    : null) as Talker["feature"],
+                    : name === "history"
+                      ? history
+                      : null) as Talker["feature"],
             };
           },
         },
@@ -151,6 +156,99 @@ describe("channelList", () => {
     await expect(
       telegram.send!.send("c-1" as ConversationId, { text: "hi" }),
     ).resolves.toMatchObject({ messageId: "sent-1" });
+  });
+
+  it("reads a live channel's history through its Connection, newest first", async () => {
+    // The Connection's history answers oldest first.
+    const said = (messageId: string, at: number): ChannelMessage => ({
+      ...message({ messageId, timestamp: new Date(at) }),
+      channel: "telegram",
+      direction: "inbound",
+    });
+    const now = Date.now();
+    const history: TalkHistory = {
+      query: async () => [said("older", now - 2_000), said("newer", now - 1_000)],
+    };
+    const { registry, channels } = setup([
+      talkService("telegram", { history: true }, null, null, history).descriptor,
+    ]);
+    const telegram = channels.find((channel) => channel.name === "telegram")!;
+    // Rome keeps no copy of a live channel, so People reads it elsewhere.
+    expect(telegram.messages?.byAccount).toBeNull();
+
+    await expect(telegram.messages!.query({})).rejects.toThrow(
+      'No connection backs channel "telegram"',
+    );
+
+    const connection = await registry.connect("telegram");
+    // The Connection exists but its Talk is not built until a credential backs it.
+    await expect(telegram.messages!.query({})).rejects.toBeInstanceOf(ChannelNotConnected);
+    await registry.importCredential(connection.id, "bot", {
+      material: { token: "t" },
+      expiresAt: "never",
+    });
+    const page = await telegram.messages!.query({});
+    expect(page.map((entry) => entry.messageId)).toEqual(["newer", "older"]);
+    expect((await telegram.messages!.query({ limit: 1 })).map((entry) => entry.messageId)).toEqual([
+      "newer",
+    ]);
+  });
+
+  it("reports a Talk whose history flag and history feature disagree", async () => {
+    testDb = createTestDb();
+    const error = rs.fn();
+    const logger = { debug: rs.fn(), info: rs.fn(), warn: rs.fn(), error };
+    const registry = new ConnectionRegistry({
+      ledger: new DrizzleGrantLedger(testDb.db),
+      logger: logger as never,
+    });
+    // Offers a history read but does not declare one, so its channel would
+    // never get a `messages` port.
+    const history: TalkHistory = { query: async () => [] };
+    registry.register(talkService("telegram", {}, null, null, history).descriptor);
+    const connection = await registry.connect("telegram");
+    await registry.importCredential(connection.id, "bot", {
+      material: { token: "t" },
+      expiresAt: "never",
+    });
+
+    expect(error).toHaveBeenCalledWith("talker history flag disagrees with its history feature", {
+      connectionId: connection.id,
+      service: "telegram",
+      declared: false,
+      offered: true,
+    });
+  });
+
+  it("builds a Talk whose history cannot be checked, and says so", async () => {
+    testDb = createTestDb();
+    const warn = rs.fn();
+    const logger = { debug: rs.fn(), info: rs.fn(), warn, error: rs.fn() };
+    const registry = new ConnectionRegistry({
+      ledger: new DrizzleGrantLedger(testDb.db),
+      logger: logger as never,
+    });
+    const service = talkService("telegram");
+    const build = service.descriptor.capabilities.talker!.build;
+    service.descriptor.capabilities.talker!.build = (creds, kit) => ({
+      ...build(creds, kit),
+      feature: () => {
+        throw new Error("not started");
+      },
+    });
+    registry.register(service.descriptor);
+    const connection = await registry.connect("telegram");
+    await registry.importCredential(connection.id, "bot", {
+      material: { token: "t" },
+      expiresAt: "never",
+    });
+
+    expect(service.epochs).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith("could not check the talker's history flag", {
+      connectionId: connection.id,
+      service: "telegram",
+      error: "not started",
+    });
   });
 
   it("reaches an account directly only through a Connection that offers it", async () => {

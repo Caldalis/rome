@@ -19,12 +19,7 @@
 // Replies use the same browser session and the shared People outbox.
 
 import { z } from "zod";
-import type {
-  ConversationId,
-  NormalizedMessage,
-  TalkFeatureMap,
-  TalkFeatureName,
-} from "@rome-os/app-runtime";
+import type { ConversationId, TalkFeatureMap, TalkFeatureName } from "@rome-os/app-runtime";
 import {
   OpencliAuthError,
   openLinkedInBrowserTab,
@@ -35,9 +30,8 @@ import {
   type RunOpencli,
 } from "../../channels/linkedin-cli.js";
 import { LinkedInInboxPoller } from "../../channels/linkedin.js";
-import { linkedInChannelUserId, linkedInHistoryText } from "../../channels/linkedin-history.js";
 import { linkedInMemberIdFromProfileUrl } from "../../channels/linkedin-sync.js";
-import type { LinkedInHistoryMessage, LinkedInSyncSink } from "../../channels/linkedin-sync.js";
+import type { LinkedInSyncSink } from "../../channels/linkedin-sync.js";
 import { CredentialRejected } from "../errors.js";
 import type { SetupFn } from "../setup/types.js";
 import type {
@@ -49,7 +43,6 @@ import type {
   ProfileRecord,
   Talker,
 } from "../types.js";
-import { historyFeature } from "./talk-features.js";
 import { createLogger } from "../../logger.js";
 
 const log = createLogger("linkedin-reply");
@@ -263,22 +256,6 @@ interface LinkedInTalker extends Talker {
   getRuntimeDegradation(): CapabilityDegradation | null;
 }
 
-function toHistoryNormalizedMessage(row: LinkedInHistoryMessage): NormalizedMessage {
-  return {
-    id: row.messageId,
-    channel: "linkedin",
-    channelUserId: linkedInChannelUserId(row),
-    displayName: row.senderName ?? "",
-    threadId: row.threadId,
-    ...(row.threadName ? { threadName: row.threadName } : {}),
-    threadType: "private",
-    timestamp: row.sentAt,
-    text: linkedInHistoryText(row),
-    attachments: [],
-    rawEvent: row,
-  };
-}
-
 export function createLinkedInDescriptor(deps: LinkedInDescriptorDeps): ConnectionDescriptor {
   const run = deps.run ?? runOpencli;
   const sessionScheme = linkedinSessionScheme(run);
@@ -389,15 +366,6 @@ export function createLinkedInDescriptor(deps: LinkedInDescriptorDeps): Connecti
                     return target ? (target.threadId as ConversationId) : null;
                   },
                 };
-              }
-              if (sink.fetchHistory) {
-                features.history = historyFeature({
-                  fetchHistory: async (conversationId, windowHours) => {
-                    const since = new Date(Date.now() - windowHours * 3_600_000);
-                    const rows = await sink.fetchHistory?.(conversationId, since);
-                    return (rows ?? []).map(toHistoryNormalizedMessage);
-                  },
-                });
               }
               return (features[name] as TalkFeatureMap[K] | undefined) ?? null;
             },
