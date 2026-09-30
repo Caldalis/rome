@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createChannelMessageHookFromCatalog,
   createChannelMessageHookReloader,
   createNoopChannelMessageHook,
 } from "./app-actions-wiring.js";
@@ -47,7 +48,6 @@ export function createHook() {
     secret: captured,
     registered: false,
     async register() { this.registered = true; },
-    registerConnection() {},
     unregister() {},
   };
 }
@@ -81,12 +81,11 @@ export function createHook() {
   it("keeps a hook without unregister() in place rather than double-registering", async () => {
     const dir = await writeHookModule(`
 export function createHook() {
-  return { async register() {}, registerConnection() {} };
+  return { async register() {} };
 }
 `);
     const previous = {
       async register() {},
-      registerConnection() {},
     } as ChannelMessageHook;
     let current: ChannelMessageHook = previous;
     const onSkip = rs.fn();
@@ -110,14 +109,12 @@ export function createHook() {
 export function createHook() {
   return {
     async register() { throw new Error("register exploded"); },
-    registerConnection() {},
     unregister() {},
   };
 }
 `);
     const previous = {
       register: rs.fn(async () => {}),
-      registerConnection: rs.fn(),
       unregister: rs.fn(),
     };
     let current: ChannelMessageHook = previous;
@@ -134,5 +131,35 @@ export function createHook() {
     expect(current).toBe(previous);
     expect(previous.unregister).toHaveBeenCalledOnce();
     expect(previous.register).toHaveBeenCalledOnce();
+  });
+  it("names the migration when a loaded hook still defines registerConnection", async () => {
+    const legacy = await writeHookModule(`
+export function createHook() {
+  return { async register() {}, registerConnection() {}, unregister() {} };
+}
+`);
+    const current = await writeHookModule(`
+export function createHook() {
+  return { async register() {}, unregister() {} };
+}
+`);
+    const warn = rs.fn();
+
+    await createChannelMessageHookFromCatalog(
+      catalogWithHookDir(legacy),
+      {} as ChannelMessageHookDeps,
+      { warn },
+    );
+    await createChannelMessageHookFromCatalog(
+      catalogWithHookDir(current),
+      {} as ChannelMessageHookDeps,
+      { warn },
+    );
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      "channel-message hook defines the removed registerConnection; subscribe through deps.channels in register()",
+      { owner: "inbox" },
+    );
   });
 });

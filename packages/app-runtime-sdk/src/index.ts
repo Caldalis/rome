@@ -1485,6 +1485,12 @@ export interface TalkDirectory {
  * The two are separate answers because they fail differently — a channel that
  * does not do direct messaging at all is a different thing from one that does
  * but has no thread with this person yet.
+ *
+ * A talker offering this must return a `messageId` from `send`. Rome recognizes
+ * a sent message when it comes back — from the provider's own mirror, or from
+ * Rome's transcript of the exchange — and the provider's id is the only thing
+ * both spellings of that entry share. A send accepted anonymously cannot be
+ * followed, and is reported as delivered the moment the channel takes it.
  */
 export interface TalkDirectMessaging {
   /**
@@ -1499,43 +1505,12 @@ export interface TalkDirectMessaging {
   conversationFor(channelUserId: string): Promise<ConversationId | null>;
 }
 
-/**
- * A talker offering {@link TalkDirectMessaging} must return a `messageId` from
- * `send`. Rome recognizes a sent message when it comes back — from the
- * provider's own mirror, or from Rome's transcript of the exchange — and the
- * provider's id is the only thing both spellings of that entry share. A send
- * accepted anonymously cannot be followed, and is reported as delivered the
- * moment the channel takes it.
- */
-
-export interface ConversationInteraction {
-  id: string;
-  conversationId: ConversationId;
-  actorId: string;
-  value: unknown;
-}
-
-export interface ConversationPresentation {
-  textFallback: string;
-  parts?: MessagePart[];
-}
-
-export interface TalkInteractions {
-  subscribe(handler: (event: ConversationInteraction) => Promise<void>): () => void;
-  update(input: {
-    messageId: string;
-    conversationId: ConversationId;
-    presentation: ConversationPresentation;
-  }): Promise<void>;
-}
-
 export interface TalkFeatureMap {
   history: TalkHistory;
   inboundMedia: TalkInboundMedia;
   activity: TalkActivity;
   directory: TalkDirectory;
   directMessaging: TalkDirectMessaging;
-  interactions: TalkInteractions;
 }
 
 export type TalkFeatureName = keyof TalkFeatureMap;
@@ -1644,13 +1619,13 @@ export interface ChannelMessageHookDeps {
 }
 
 export interface ChannelMessageHook {
+  /** Subscribe to every channel in the deps' `channels` that can receive. The
+   *  host calls this once per activation, and again only after `unregister()`,
+   *  so a hook handles `register → unregister → register`. A channel's
+   *  subscription follows whatever backs it, so the host never calls the hook
+   *  per Connection. */
   register(): Promise<void>;
-  /** @deprecated A hook reaches every Connection through the channels it
-   *  subscribes to in `register`, and can make this a no-op. The host still
-   *  calls it on each Talk unlock, so a hook that subscribes per Connection
-   *  keeps hearing messages until this is removed. */
-  registerConnection(connectionId: string, service: string): void;
-  /** Detach every subscription `register`/`registerConnection` took out, so
+  /** Detach every subscription `register` took out, so
    * the host can swap in a replacement instance (e.g. after an app-keys
    * environment change) without double-handling inbound messages. A hook
    * without this method cannot be hot-swapped and stays live until restart. */
