@@ -2912,7 +2912,77 @@ describe("AgentRunner", () => {
           text: "Partial answer",
           state: "partial",
           terminalKind: "result",
+          stop: { reason: "interrupted", raw: "interrupted" },
           stopReason: "interrupted",
+        },
+      });
+    });
+
+    it("reports the unified stop reason on a turn that ended at the output limit", async () => {
+      const lifecycle = createLifecycleRecorder();
+      const provider = new MockModelProvider([
+        [
+          {
+            type: "result",
+            content: "Cut off",
+            accounting: {
+              provider: "mock",
+              model: "mock-large",
+              usage: {
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                inputTokens: 4,
+                outputTokens: 2,
+                reasoningTokens: 1,
+              },
+              stop: { reason: "max_tokens", raw: "max_tokens" },
+              stopReason: "max_tokens",
+            },
+          },
+        ],
+      ]);
+      const runner = createRunner(provider, lifecycle);
+
+      await collectMessages(runner.run({ agentName: "test-main", prompt: "Go long" }));
+
+      expect(lifecycle.finished[0]).toMatchObject({
+        status: "completed",
+        output: {
+          state: "final",
+          stop: { reason: "max_tokens", raw: "max_tokens" },
+          stopReason: "max_tokens",
+          accounting: { usage: { reasoningTokens: 1 } },
+        },
+      });
+    });
+    it("keeps the turn stop consistent with a completed status when the run reported an error", async () => {
+      // Claude's `success` result flagged `is_error` still reaches Rome as a
+      // `result` terminal, so the turn completes; its stop must not say `error`.
+      const lifecycle = createLifecycleRecorder();
+      const provider = new MockModelProvider([
+        [
+          {
+            type: "result",
+            content: "API Error: overloaded",
+            accounting: {
+              provider: "mock",
+              model: "mock-large",
+              usage: { cacheReadTokens: 0, cacheWriteTokens: 0, inputTokens: 1, outputTokens: 1 },
+              stop: { reason: "error", raw: "api_error" },
+            },
+          },
+        ],
+      ]);
+      const runner = createRunner(provider, lifecycle);
+
+      await collectMessages(runner.run({ agentName: "test-main", prompt: "Hi" }));
+
+      expect(lifecycle.finished[0]).toMatchObject({
+        status: "completed",
+        output: {
+          state: "final",
+          stop: { reason: "other", raw: "api_error" },
+          accounting: { stop: { reason: "error", raw: "api_error" } },
         },
       });
     });

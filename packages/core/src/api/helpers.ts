@@ -262,6 +262,7 @@ export function toTraceBlock(msg: TraceableAgentMessage & { agent?: string }): T
         accounting: msg.accounting,
         agent: msg.agent,
         code: msg.code,
+        ...(msg.httpStatus !== undefined ? { httpStatus: msg.httpStatus } : {}),
         provider: msg.provider,
         reason: msg.reason,
       };
