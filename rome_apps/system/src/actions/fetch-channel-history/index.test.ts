@@ -4,7 +4,6 @@ import type {
   ChannelMessage,
   ChannelsService,
   ConversationId,
-  InboundMessage,
 } from "@rome-os/app-runtime";
 import { createAction } from "./index.js";
 
@@ -18,8 +17,10 @@ const actionConfig = {
   sideEffects: "read-only",
 } as const;
 
-function makeMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
+function makeMessage(overrides: Partial<ChannelMessage> = {}): ChannelMessage {
   return {
+    channel: "discord",
+    direction: "inbound",
     messageId: "msg1",
     conversationId: "general" as ConversationId,
     senderId: "user1",
@@ -33,7 +34,7 @@ function makeMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
 }
 
 interface HistoryAdapter {
-  fetchHistory?: (conversationId: string | null, windowHours: number) => Promise<InboundMessage[]>;
+  fetchHistory?: (conversationId: string | null, windowHours: number) => Promise<ChannelMessage[]>;
 }
 
 function makeDeps(adapters: Map<string, HistoryAdapter>): { channelsService: ChannelsService } {
@@ -54,7 +55,7 @@ function makeDeps(adapters: Map<string, HistoryAdapter>): { channelsService: Cha
         const hours = since
           ? Math.max(1, Math.ceil((Date.now() - since.getTime()) / 3_600_000))
           : 24;
-        return (await adapter.fetchHistory(conversationId ?? null, hours)) as ChannelMessage[];
+        return adapter.fetchHistory(conversationId ?? null, hours);
       },
     },
   };
@@ -88,7 +89,23 @@ describe("fetch_channel_history", () => {
     const result = await action.execute({ channel: "slack" });
 
     if (result.status !== "error") throw new Error(`expected error, got ${result.status}`);
-    expect(result.error).toContain("not configured");
+    expect(result.error).toBe('Channel "slack" is not configured or not running.');
+  });
+
+  // The tool's own text, not the channels service's.
+  it("returns error when several Connections back the channel", async () => {
+    const deps = makeDeps(new Map([["telegram_user", {}]]));
+    deps.channelsService.list = async () => [
+      { name: "telegram_user", connectionIds: ["tg-a", "tg-b"] },
+    ];
+
+    const action = createAction(actionConfig, deps);
+    const result = await action.execute({ channel: "telegram_user" });
+
+    if (result.status !== "error") throw new Error(`expected error, got ${result.status}`);
+    expect(result.error).toBe(
+      'Channel "telegram_user" has multiple connections; connectionId is required.',
+    );
   });
 
   it("returns error when the channel reads no history", async () => {

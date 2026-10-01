@@ -106,6 +106,40 @@ function makeAppLookup(catalog: AppCatalog): AppLookup {
   };
 }
 
+/**
+ * Deps that @rome-os/app-runtime 0.7 removed, answered for that release with
+ * the change an app built against 0.6 has to make, rather than with a
+ * `Cannot read properties of undefined` from deep inside the app. Each is a
+ * non-enumerable getter, so copying or listing the deps never trips it. It is
+ * still an own property, so `"talkRouter" in deps` answers true while the
+ * getter is here: an app feature-testing with `in` must read the value.
+ *
+ * TODO(0.8): remove, with REMOVED_HOOK_DEPS and withRemovedDeps.
+ */
+const REMOVED_ACTION_DEPS: Record<string, string> = {
+  talkRouter:
+    "deps.talkRouter was removed in @rome-os/app-runtime 0.7: send and read on channels through deps.channelsService",
+};
+// TODO(0.8): remove, with REMOVED_ACTION_DEPS and withRemovedDeps.
+const REMOVED_HOOK_DEPS: Record<string, string> = {
+  talkRouter:
+    "deps.talkRouter was removed in @rome-os/app-runtime 0.7: a hook hears through deps.channels (channel.inbound.subscribe) and answers through channel.send",
+};
+
+function withRemovedDeps<T extends object>(deps: T, removed: Record<string, string>): T {
+  for (const [name, migration] of Object.entries(removed)) {
+    if (name in deps) continue;
+    Object.defineProperty(deps, name, {
+      configurable: true,
+      enumerable: false,
+      get() {
+        throw new Error(migration);
+      },
+    });
+  }
+  return deps;
+}
+
 function createAppActionRuntimeDeps(
   record: AppActionRecord,
   catalog: AppCatalog,
@@ -117,20 +151,23 @@ function createAppActionRuntimeDeps(
     throw new Error(`App "${record.metadata.ownerId}" is not resolved in the catalog`);
   }
 
-  return {
-    ...deps,
-    ...(record.metadata.ownerId === "system" && services.hostExecution
-      ? { hostExecution: services.hostExecution }
-      : {}),
-    appContext: createRomeAppContext(app, {
-      catalog,
-      db: services.db,
-      actionEngine: services.actionEngine,
-      routinesRepo: services.routinesRepo,
-      repositories: services.repositories,
-      favorService: services.favorService,
-    }),
-  } satisfies AppActionRuntimeDeps<Record<string, unknown>>;
+  return withRemovedDeps(
+    {
+      ...deps,
+      ...(record.metadata.ownerId === "system" && services.hostExecution
+        ? { hostExecution: services.hostExecution }
+        : {}),
+      appContext: createRomeAppContext(app, {
+        catalog,
+        db: services.db,
+        actionEngine: services.actionEngine,
+        routinesRepo: services.routinesRepo,
+        repositories: services.repositories,
+        favorService: services.favorService,
+      }),
+    } satisfies AppActionRuntimeDeps<Record<string, unknown>>,
+    REMOVED_ACTION_DEPS,
+  );
 }
 
 function createLazyAppAction(
@@ -188,9 +225,11 @@ export async function registerAppActions(
     }
 
     try {
-      const action = await instantiateActionFromDirectory(record.config, record.directory, {
-        ...createAppActionRuntimeDeps(record, catalog, deps, services),
-      });
+      const action = await instantiateActionFromDirectory(
+        record.config,
+        record.directory,
+        createAppActionRuntimeDeps(record, catalog, deps, services),
+      );
       actionRegistry.register(action, record.metadata);
       loaded.push(name);
     } catch (err) {
@@ -271,7 +310,9 @@ export async function createChannelMessageHookFromCatalog(
   const module = await importModuleWithCacheBuster(entryPath);
 
   if (typeof module.createHook === "function") {
-    const hook = module.createHook(deps) as ChannelMessageHook;
+    const hook = module.createHook(
+      withRemovedDeps({ ...deps }, REMOVED_HOOK_DEPS),
+    ) as ChannelMessageHook;
     // A hook built against @rome-os/app-runtime 0.6 may subscribe only in the
     // removed registerConnection, which the host no longer calls: it would hear
     // nothing and say nothing. Name the migration instead.
