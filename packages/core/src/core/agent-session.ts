@@ -87,7 +87,7 @@ import {
   type Link,
   type Span,
 } from "@opentelemetry/api";
-import { isTerminalBlock } from "./agent-message.js";
+import { isTerminalBlock, isTransientDelta } from "./agent-message.js";
 import type { ActiveSubagentRegistry, ParentSubagentRef } from "./active-subagent-registry.js";
 import type {
   ExecuteSubagentInput,
@@ -1556,6 +1556,9 @@ async function openSession(
         interactiveSurfaceDetached: true,
       },
       projectProviderMessage: async (msg) => {
+        if (msg.type === "tool_input_delta" && subagentToolNames.has(msg.tool)) {
+          return [];
+        }
         if (msg.type === "tool_use" && subagentToolNames.has(msg.tool)) {
           forkPendingSubagentUses.set(msg.id, msg);
           maybeEmitForkSubagentStart(msg.id);
@@ -2143,10 +2146,15 @@ class AgentSessionImpl implements AgentSession {
           });
           this.currentModelSpan?.setAttribute("ttft_ms", ttftMs);
         }
-        // text_delta is a transient preview of an in-flight text block — the
-        // complete block still follows. Fast-path it straight to the sink:
-        // no span-translator capture, no per-delta DB touch, no metrics.
-        if (msg.type === "text_delta") {
+        // Deltas are transient previews of an in-flight block; the complete
+        // block still follows. Fast-path them straight to the sink: no
+        // span-translator capture, no per-delta DB touch, no metrics.
+        if (isTransientDelta(msg)) {
+          // A subagent call publishes `subagent_start` instead of its
+          // `tool_use`, so its input preview would reference nothing.
+          if (msg.type === "tool_input_delta" && this.subagentToolNames.has(msg.tool)) {
+            continue;
+          }
           this.publishOutbound(sink, msg);
           continue;
         }

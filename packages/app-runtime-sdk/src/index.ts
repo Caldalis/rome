@@ -727,6 +727,13 @@ export interface TextMessage {
    *  not promoted into the answer flow). Borrows Codex's vocabulary by design;
    *  it is not Codex-specific. */
   turnPhase?: "commentary" | "final";
+  /**
+   * Identity of this content block within its turn: the same value on the
+   * block's deltas and on the completed block, so a consumer can match them
+   * without relying on event order. Opaque, and unique only within its turn.
+   * Absent when the provider gives no block identity.
+   */
+  blockId?: string;
 }
 
 /**
@@ -739,10 +746,67 @@ export interface TextMessage {
 export interface TextDeltaMessage {
   type: "text_delta";
   content: string;
+  /** The `blockId` of the `text` block this delta belongs to, when known. */
+  blockId?: string;
 }
 
 export interface ThinkingMessage {
   type: "thinking";
+  content: string;
+  /**
+   * Identity of this content block within its turn: the same value on the
+   * block's deltas and on the completed block, so a consumer can match them
+   * without relying on event order. Opaque, and unique only within its turn.
+   * Absent when the provider gives no block identity.
+   */
+  blockId?: string;
+}
+
+/**
+ * Incremental preview of an in-flight `thinking` block. Transient, like
+ * `text_delta`: consumers that only care about whole blocks must ignore this
+ * variant. The complete `thinking` block normally follows; a turn interrupted
+ * or failed mid-block may end without it, so a consumer that renders previews
+ * discards any without a matching block when the turn ends. Emitted only when
+ * the provider streams reasoning text; a provider that keeps reasoning hidden
+ * sends none.
+ */
+export interface ThinkingDeltaMessage {
+  type: "thinking_delta";
+  /** The `blockId` of the `thinking` block this delta belongs to. */
+  blockId: string;
+  content: string;
+}
+
+/**
+ * Incremental preview of a tool call's input while the model is still writing
+ * it, as a fragment of the input's JSON text. Transient: consumers that only
+ * care about whole blocks must ignore this variant. The `tool_use` with the
+ * complete `input` normally follows; a turn interrupted or failed while the
+ * model is writing the input may end without it, so a consumer that renders
+ * previews discards any without a matching `tool_use` when the turn ends.
+ */
+export interface ToolInputDeltaMessage {
+  type: "tool_input_delta";
+  /** The `id` of the `tool_use` this input belongs to. */
+  toolUseId: string;
+  /** The tool's name, as on the `tool_use` this input belongs to. */
+  tool: string;
+  content: string;
+}
+
+/**
+ * Incremental output of a running tool call, for example a shell command's
+ * output as it is produced. Transient: consumers that only care about whole
+ * blocks must ignore this variant. The `tool_result` with the complete output
+ * normally follows; a turn interrupted or failed while the tool runs may end
+ * without it, so a consumer that renders previews discards any without a
+ * matching `tool_result` when the turn ends.
+ */
+export interface ToolOutputDeltaMessage {
+  type: "tool_output_delta";
+  /** The `id` of the `tool_use` producing this output. */
+  toolUseId: string;
   content: string;
 }
 
@@ -930,6 +994,9 @@ export type AgentMessage =
   | TextMessage
   | TextDeltaMessage
   | ThinkingMessage
+  | ThinkingDeltaMessage
+  | ToolInputDeltaMessage
+  | ToolOutputDeltaMessage
   | ToolUseMessage
   | ToolResultMessage
   | SubagentStartMessage

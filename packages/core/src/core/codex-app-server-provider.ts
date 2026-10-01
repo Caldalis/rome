@@ -50,6 +50,9 @@ import {
   type ItemCompletedNotification,
   type ItemStartedNotification,
   type AgentMessageDeltaNotification,
+  type CommandExecutionOutputDeltaNotification,
+  type ReasoningSummaryTextDeltaNotification,
+  type ReasoningTextDeltaNotification,
   type DynamicToolSpec,
   type MessagePhase,
   type ReasoningEffort,
@@ -352,6 +355,9 @@ interface ActiveTurn {
   errorHttpStatus?: number;
   /** `turn.status` from `turn/completed`, mapped to the terminal's `stop`. */
   nativeStatus: string | null;
+  /** Last reasoning part each in-flight reasoning item streamed, by item id.
+   *  Lives and dies with the turn, so an unfinished item leaves nothing behind. */
+  reasoningDeltaParts: Map<string, string>;
 }
 
 interface CodexAppServerProviderOptions {
@@ -574,6 +580,7 @@ export class CodexAppServerProvider implements ModelProvider {
       if (isAgentMessageItem(item)) {
         if (lifecycle !== "completed") return;
         if (!item.text) return;
+        const blockId = typeof item.id === "string" && item.id ? item.id : undefined;
         const turnPhase = mapPhase(item.phase);
         // The final answer is carried by the terminal `result` block; commentary
         // is promoted by the UI. (Anthropic provider mirrors this split.)
@@ -581,16 +588,25 @@ export class CodexAppServerProvider implements ModelProvider {
           if (activeTurn) activeTurn.finalText = item.text;
         }
         if (params.outputSchema) return;
-        const msg: AgentMessage = turnPhase
-          ? { type: "text", content: item.text, turnPhase }
-          : { type: "text", content: item.text };
+        const msg: AgentMessage = {
+          type: "text",
+          content: item.text,
+          ...(turnPhase ? { turnPhase } : {}),
+          ...(blockId ? { blockId } : {}),
+        };
         turnSink.push(msg);
         return;
       }
       if (isReasoningItem(item)) {
         if (lifecycle !== "completed") return;
+        activeTurn?.reasoningDeltaParts.delete(item.id);
         const text = [...item.summary, ...item.content].filter(Boolean).join("\n").trim();
-        if (text) turnSink.push({ type: "thinking", content: text });
+        if (text)
+          turnSink.push(
+            item.id
+              ? { type: "thinking", content: text, blockId: item.id }
+              : { type: "thinking", content: text },
+          );
         return;
       }
       // Image generation: the `imageGeneration` item carries the inline image
@@ -697,7 +713,38 @@ export class CodexAppServerProvider implements ModelProvider {
           const p = params2 as AgentMessageDeltaNotification;
           if (!activeTurn || (activeTurn.turnId && activeTurn.turnId !== p.turnId)) return;
           if (p.delta && !params.outputSchema)
-            (activeTurn?.sink ?? sink).push({ type: "text_delta", content: p.delta });
+            activeTurn.sink.push(
+              p.itemId
+                ? { type: "text_delta", content: p.delta, blockId: p.itemId }
+                : { type: "text_delta", content: p.delta },
+            );
+          return;
+        }
+        case Notify.reasoningSummaryTextDelta:
+        case Notify.reasoningTextDelta: {
+          const p = params2 as ReasoningSummaryTextDeltaNotification &
+            Partial<ReasoningTextDeltaNotification>;
+          if (!activeTurn || (activeTurn.turnId && activeTurn.turnId !== p.turnId)) return;
+          if (!p.delta || !p.itemId) return;
+          // The completed `thinking` block joins every summary and content part
+          // with a newline; separate parts the same way while streaming.
+          const part = `${method}:${p.summaryIndex ?? p.contentIndex ?? 0}`;
+          const previousPart = activeTurn.reasoningDeltaParts.get(p.itemId);
+          activeTurn.reasoningDeltaParts.set(p.itemId, part);
+          const content =
+            previousPart !== undefined && previousPart !== part ? `\n${p.delta}` : p.delta;
+          activeTurn.sink.push({ type: "thinking_delta", blockId: p.itemId, content });
+          return;
+        }
+        case Notify.commandExecutionOutputDelta: {
+          const p = params2 as CommandExecutionOutputDeltaNotification;
+          if (!activeTurn || (activeTurn.turnId && activeTurn.turnId !== p.turnId)) return;
+          if (!p.delta || !p.itemId) return;
+          activeTurn.sink.push({
+            type: "tool_output_delta",
+            toolUseId: p.itemId,
+            content: p.delta,
+          });
           return;
         }
         case Notify.itemStarted: {
@@ -920,6 +967,7 @@ export class CodexAppServerProvider implements ModelProvider {
         errorMessage: null,
         errorCode: null,
         nativeStatus: null,
+        reasoningDeltaParts: new Map(),
       };
       activeTurn = turn;
       const effort = normalizeEffort(inputs.at(-1)?.reasoningEffort ?? params.reasoningEffort);
