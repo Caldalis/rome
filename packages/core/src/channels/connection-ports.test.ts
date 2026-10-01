@@ -1,9 +1,15 @@
-import { describe, expect, it } from "@rstest/core";
-import type { ConversationId, NormalizedMessage } from "@rome-os/app-runtime";
+import { afterEach, describe, expect, it, rs } from "@rstest/core";
+import type {
+  ChannelMessage,
+  ConversationId,
+  NormalizedMessage,
+  TalkHistory,
+} from "@rome-os/app-runtime";
 import { historyFeature } from "../connections/integrations/talk-features.js";
 import {
   connectionPorts,
   LIVE_DEFAULT_WINDOW_MS,
+  LIVE_READ_TTL_MS,
   type ConnectionPortsDeps,
 } from "./connection-ports.js";
 import { testMessagesQueryContract } from "./messages-contract.js";
@@ -102,5 +108,114 @@ describe("connection-backed messages", () => {
       "recent",
       "old",
     ]);
+  });
+});
+
+describe("connection-backed messages, shared reads", () => {
+  const NOW = Date.parse("2026-09-30T12:00:00.000Z");
+  let clock = NOW;
+  afterEach(() => {
+    rs.restoreAllMocks();
+    clock = NOW;
+  });
+
+  function line(id: string, minutesAgo: number): ChannelMessage {
+    return {
+      channel: "telegram_user",
+      direction: "inbound",
+      messageId: id,
+      conversationId: "dm-1" as ConversationId,
+      senderId: "7",
+      text: id,
+      attachments: [],
+      timestamp: new Date(NOW - minutesAgo * 60_000),
+    };
+  }
+
+  // A live read that counts itself, answering `lines(input)` oldest first.
+  function port(lines: (input: { since?: Date }) => ChannelMessage[] | Promise<ChannelMessage[]>) {
+    rs.spyOn(Date, "now").mockImplementation(() => clock);
+    const query = rs.fn<TalkHistory["query"]>(async (input) => lines(input));
+    const deps = {
+      registry: {
+        getDescriptor: () => ({ capabilities: { talker: { history: true } } }),
+        find: () => [{ id: "conn-1" }],
+        onUnlocked: () => {},
+        registeredServices: () => ["telegram_user"],
+      },
+      router: { feature: () => ({ query }) },
+    } as unknown as ConnectionPortsDeps;
+    const messages = connectionPorts(deps, "telegram_user")?.messages;
+    if (!messages) throw new Error("a talker with history backs the channel's messages");
+    return { messages, query };
+  }
+
+  const ids = (page: ChannelMessage[]) => page.map((m) => m.messageId);
+
+  it("shares a read over the same whole-hour window", async () => {
+    const { messages, query } = port(() => [line("older", 50), line("newer", 5)]);
+
+    await messages.query({ since: new Date(NOW - 60 * 60_000) });
+    clock += LIVE_READ_TTL_MS - 1;
+    const narrower = await messages.query({ since: new Date(NOW - 10 * 60_000), limit: 5 });
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(ids(narrower)).toEqual(["newer"]);
+  });
+
+  it("shares a read still under way", async () => {
+    const { messages, query } = port(() => [line("only", 5)]);
+
+    const [first, second] = await Promise.all([messages.query({}), messages.query({})]);
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(ids(first)).toEqual(["only"]);
+    expect(ids(second)).toEqual(["only"]);
+  });
+
+  it("reads again once the read is stale, or reaches further back", async () => {
+    const { messages, query } = port(() => [line("only", 5)]);
+
+    await messages.query({ since: new Date(NOW - 60 * 60_000) });
+    await messages.query({ since: new Date(NOW - 120 * 60_000) });
+    clock += LIVE_READ_TTL_MS;
+    await messages.query({ since: new Date(NOW - 60 * 60_000) });
+
+    expect(query).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a conversation's read apart from the whole account's", async () => {
+    const { messages, query } = port(() => [line("only", 5)]);
+
+    await messages.query({});
+    await messages.query({ conversationId: "dm-1" as ConversationId });
+
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  // Discord keeps the oldest lines of each channel after its cutoff, so a
+  // day's read of a busy channel can hold none of the last hour's.
+  it("does not answer a narrower window from a wider read", async () => {
+    const said = [line("day-1", 20 * 60), line("day-2", 19 * 60), line("recent", 30)];
+    const oldestTwo = ({ since }: { since?: Date }) =>
+      said.filter((m) => m.timestamp.getTime() >= (since?.getTime() ?? 0)).slice(0, 2);
+    const { messages, query } = port(oldestTwo);
+
+    expect(ids(await messages.query({}))).toEqual(["day-2", "day-1"]);
+    expect(ids(await messages.query({ since: new Date(NOW - 60 * 60_000) }))).toEqual(["recent"]);
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not keep a failed read", async () => {
+    let fail = true;
+    const { messages, query } = port(() => {
+      if (fail) throw new Error("platform down");
+      return [line("only", 5)];
+    });
+
+    await expect(messages.query({})).rejects.toThrow("platform down");
+    fail = false;
+    expect(ids(await messages.query({}))).toEqual(["only"]);
+    expect(query).toHaveBeenCalledTimes(2);
   });
 });
