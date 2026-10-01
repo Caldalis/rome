@@ -137,6 +137,16 @@ export const runCommand: RunCommand = (file, args, opts = {}) =>
     );
   });
 
+/** `promise`, or `signal`'s reason as soon as it aborts. The work goes on. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 // ── status ────────────────────────────────────────────────────────────────
 
 /**
@@ -309,6 +319,8 @@ export class WechatUserRuntime {
   readonly accessibilityLauncher: string;
   private readonly run: RunCommand;
   private starting: Promise<void> | null = null;
+  private installing: Promise<void> | null = null;
+  private captures = 0;
 
   constructor(config: WechatUserRuntimeConfig = {}) {
     this.home = config.home ?? process.env.HOME ?? homedir();
@@ -331,6 +343,38 @@ export class WechatUserRuntime {
   /** Where the unpacked client lives before it is linked to its canonical path. */
   get clientDir(): string {
     return join(this.prefix, "client", "opt", "wechat");
+  }
+
+  /**
+   * Hold off every ordinary launch while the connection's setup prepares and
+   * runs its key capture, which replaces the client with one under a debugger. `start()` launches nothing until the
+   * returned release runs. The capture kills the client on purpose, so nothing,
+   * such as the guardian opening /desktop/wechat, may bring an ordinary one back
+   * while it runs.
+   */
+  holdCapture(): () => void {
+    this.captures += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.captures -= 1;
+    };
+  }
+
+  /** Whether a key capture holds the client. */
+  get captureInProgress(): boolean {
+    return this.captures > 0;
+  }
+
+  /** Whether an install is running for any caller. */
+  get installInFlight(): boolean {
+    return this.installing !== null;
+  }
+
+  /** Whether the client is unpacked in this container. */
+  installed(): Promise<boolean> {
+    return exists(join(this.clientDir, "wechat"));
   }
 
   /** The python environment holding the reader's dependencies. */
@@ -498,7 +542,7 @@ export class WechatUserRuntime {
   }
 
   async status(): Promise<WechatUserStatus> {
-    const installed = await exists(join(this.clientDir, "wechat"));
+    const installed = await this.installed();
     const pid = installed ? await this.pid() : null;
     const scriptInstalled = this.desktop ? await exists(this.desktopScript) : false;
     // A stopped client reports where it will start: the shared display where
@@ -553,18 +597,30 @@ export class WechatUserRuntime {
    * resolves its own resources against `/opt/wechat` regardless of where it
    * was started from.
    */
-  async install(signal?: AbortSignal): Promise<void> {
+  install(signal?: AbortSignal): Promise<void> {
+    // The WeChat app and the connection's setup both install. One download and
+    // unpack owns the client's files until it completes; a second caller joins
+    // it. A caller's signal stops only its own wait, so cancelling one caller
+    // never fails another's install, and the download finishes in the background.
+    // A caller already cancelled starts nothing.
+    if (signal?.aborted && !this.installing) return Promise.reject(signal.reason);
+    this.installing ??= this.installClient().finally(() => {
+      this.installing = null;
+    });
+    return signal ? untilAborted(this.installing, signal) : this.installing;
+  }
+
+  private async installClient(): Promise<void> {
     const deb = join(this.prefix, "wechat.deb");
     const clientRoot = join(this.prefix, "client");
     await mkdir(this.prefix, { recursive: true });
 
     if (!(await exists(join(this.clientDir, "wechat")))) {
-      await this.fetchClientArchive(deb, signal);
+      await this.fetchClientArchive(deb);
       log.info("wechat_user.unpacking_client", { prefix: clientRoot });
       await mkdir(clientRoot, { recursive: true });
       const unpacked = await this.run("dpkg-deb", ["-x", deb, clientRoot], {
         timeoutMs: INSTALL_TIMEOUT_MS,
-        ...(signal ? { signal } : {}),
       });
       if (unpacked.code !== 0) {
         throw new WechatUserRuntimeError(
@@ -590,9 +646,9 @@ export class WechatUserRuntime {
    * read the archive for, so it neither downloads a missing one nor hashes the
    * better part of a gigabyte to prove one it will not open.
    */
-  private async fetchClientArchive(path: string, signal?: AbortSignal): Promise<void> {
+  private async fetchClientArchive(path: string): Promise<void> {
     if (await exists(path)) {
-      const digest = await this.clientDigest(path, signal);
+      const digest = await this.clientDigest(path);
       if (digest === WECHAT_CLIENT_SHA256) return;
       log.warn("wechat_user.cached_client_rejected", {
         path,
@@ -606,7 +662,7 @@ export class WechatUserRuntime {
     const downloaded = await this.run(
       "curl",
       ["-fsSL", "--retry", "3", "-o", `${path}.part`, WECHAT_CLIENT_URL],
-      { timeoutMs: INSTALL_TIMEOUT_MS, ...(signal ? { signal } : {}) },
+      { timeoutMs: INSTALL_TIMEOUT_MS },
     );
     if (downloaded.code !== 0) {
       throw new WechatUserRuntimeError(
@@ -614,7 +670,7 @@ export class WechatUserRuntime {
       );
     }
 
-    const digest = await this.clientDigest(`${path}.part`, signal);
+    const digest = await this.clientDigest(`${path}.part`);
     if (digest !== WECHAT_CLIENT_SHA256) {
       await this.discard(`${path}.part`);
       throw new WechatUserRuntimeError(
@@ -653,10 +709,8 @@ export class WechatUserRuntime {
    * here rather than reporting a mismatch keeps a `sha256sum` that never
    * answered from evicting a cached archive that was the right build all along.
    */
-  private async clientDigest(path: string, signal?: AbortSignal): Promise<string> {
-    const checksum = await this.run("sha256sum", [path], {
-      ...(signal ? { signal } : {}),
-    });
+  private async clientDigest(path: string): Promise<string> {
+    const checksum = await this.run("sha256sum", [path]);
     if (checksum.code !== 0) {
       throw new WechatUserRuntimeError(
         `Could not checksum the WeChat client at ${path}: ` +
@@ -755,11 +809,14 @@ export class WechatUserRuntime {
   }
 
   private async startClient(signal?: AbortSignal): Promise<void> {
+    if (this.captureInProgress) return;
     if (await this.pid()) return;
     if (signal?.aborted) throw signal.reason;
     const display = await this.ensureDesktop(signal);
     await this.ensureClientLink();
     await this.prepareSession();
+    // A capture can take the lease during the steps above; it owns the launch.
+    if (this.captureInProgress) return;
 
     const started = await this.run(
       "sh",

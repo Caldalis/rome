@@ -41,6 +41,18 @@ The display outlives Rome, so a Rome restart finds the client still running and 
 
 A client that was already running on the shared desktop stays there until it next exits. Until then the connection's status says so. To finish the move, quit WeChat at `/desktop`. Within a few minutes Rome starts it again on its own display, which can need one sign-in confirmed on the phone. Open `/desktop/wechat` then, so the login window is visible when it appears.
 
+### The WeChat app
+
+`/desktop/wechat` works without a connection ([`wechat-app.ts`](../packages/core/src/desktop-apps/wechat-app.ts)):
+
+- **Not installed:** the page offers **Install WeChat**. It downloads the pinned client, which takes a few minutes, then opens it. The download runs in Rome, so the guardian can leave the page.
+- **Installed but not running:** opening the page starts the client, once per visit. A start that failed waits for **Try again**, so it cannot loop.
+- **Running:** the page shows WeChat's desktop. While the client starts, a small "Starting WeChat" banner sits over it, and the desktop stays mounted, so the login window shows the moment it appears.
+
+Rome does not keep the client running on its own. A connection starts it when it finds it missing. `GET /api/wechat/app` reports the state, and `POST /api/wechat/app/install` and `POST /api/wechat/app/start` act on it.
+
+Connect's key capture kills the client and relaunches it under the debugger. From the moment Connect's setup takes that path, through its install and preparation to the end of the capture, it holds a lease on the runtime, and `start()` launches nothing: not for the page, and not for the connection's health check. The page reports starting until the capture's own client runs, with the desktop view under the banner, then shows the desktop, where the guardian signs in. The desktop view reconnects whenever the client reaches running, because the VNC client does not reconnect by itself and may have connected before the desktop was up. A client signed in from the app has not had its store key captured, so reading history still needs **Connect**, which can ask for one more confirmation on the phone.
+
 ## Connect
 
 1. Open Settings → Connections → WeChat.

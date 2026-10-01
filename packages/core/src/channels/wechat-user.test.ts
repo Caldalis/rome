@@ -195,6 +195,68 @@ describe("WechatUserRuntime.start", () => {
     expect(calls.some((call) => ["curl", "dpkg-deb", "pkill"].includes(call[0]!))).toBe(false);
   });
 
+  it("launches nothing while a key capture holds the client", async () => {
+    const h = await tempHome();
+    const { run, calls } = scriptedRun({});
+    const runtime = new WechatUserRuntime({
+      home: h,
+      runtimeDir: join(h, "run"),
+      canonicalPrefix: join(h, "opt-wechat"),
+      run,
+    });
+    await writeFile(await ensureFile(join(runtime.clientDir, "wechat")), "x");
+
+    const release = runtime.holdCapture();
+    await runtime.start();
+    expect(calls.some((call) => call.some((arg) => arg.includes('setsid "$1/wechat"')))).toBe(
+      false,
+    );
+
+    release();
+    release();
+    expect(runtime.captureInProgress).toBe(false);
+    await runtime.start();
+    expect(
+      calls.filter((call) => call.some((arg) => arg.includes('setsid "$1/wechat"'))),
+    ).toHaveLength(1);
+  });
+
+  it("launches nothing when a key capture takes the lease while a start is under way", async () => {
+    const h = await tempHome();
+    let reachedSession = false;
+    let openSession: () => void = () => {};
+    const sessionOpen = new Promise<void>((resolve) => {
+      openSession = resolve;
+    });
+    const scripted = scriptedRun({});
+    const run: RunCommand = async (file, args, options) => {
+      // prepareSession() is one of the slow steps before the launch.
+      if (args.includes("wechat-session")) {
+        reachedSession = true;
+        await sessionOpen;
+      }
+      return scripted.run(file, args, options);
+    };
+    const runtime = new WechatUserRuntime({
+      home: h,
+      runtimeDir: join(h, "run"),
+      canonicalPrefix: join(h, "opt-wechat"),
+      run,
+    });
+    await writeFile(await ensureFile(join(runtime.clientDir, "wechat")), "x");
+
+    const starting = runtime.start();
+    await rs.waitFor(() => expect(reachedSession).toBe(true));
+    const release = runtime.holdCapture();
+    openSession();
+    await starting;
+
+    expect(
+      scripted.calls.some((call) => call.some((arg) => arg.includes('setsid "$1/wechat"'))),
+    ).toBe(false);
+    release();
+  });
+
   it("leaves an existing desktop process alone", async () => {
     const { run, calls } = scriptedRun({ pgrep: () => ok("42\n") });
     const runtime = new WechatUserRuntime({ home: await tempHome(), run });
@@ -585,6 +647,63 @@ describe("WechatUserRuntime.install", () => {
     // A rejected download that stays on disk would win the cache check forever.
     expect(existsSync(join(h, ".local/share/wechat/wechat.deb"))).toBe(false);
     expect(existsSync(join(h, ".local/share/wechat/wechat.deb.part"))).toBe(false);
+  });
+
+  it("shares one download between overlapping installs", async () => {
+    // The WeChat app's Install button and the connection's setup each call
+    // install(); a second caller joins the first rather than writing the same
+    // files from a second download.
+    const h = await tempHome();
+    await mkdir(join(h, ".local/share/wechat"), { recursive: true });
+    const { run, calls } = scriptedDownload();
+    const runtime = new WechatUserRuntime({ home: h, canonicalPrefix: join(h, "wechat"), run });
+
+    const installs = Promise.all([runtime.install(), runtime.install()]);
+    expect(runtime.installInFlight).toBe(true);
+    await installs;
+    expect(runtime.installInFlight).toBe(false);
+
+    expect(calls.filter((call) => call[0] === "curl")).toHaveLength(1);
+    expect(calls.filter((call) => call[0] === "dpkg-deb")).toHaveLength(1);
+  });
+
+  it("lets each caller stop waiting without cancelling another's install", async () => {
+    const h = await tempHome();
+    await mkdir(join(h, ".local/share/wechat"), { recursive: true });
+    const download = scriptedDownload();
+    let finishCurl: () => void = () => {};
+    const curlDone = new Promise<void>((resolve) => {
+      finishCurl = resolve;
+    });
+    const run: RunCommand = async (file, args, options) => {
+      if (file === "curl") await curlDone;
+      return download.run(file, args, options);
+    };
+    const runtime = new WechatUserRuntime({ home: h, canonicalPrefix: join(h, "wechat"), run });
+
+    const setup = new AbortController();
+    const first = runtime.install(setup.signal);
+    const joined = runtime.install();
+    setup.abort(new Error("setup cancelled"));
+
+    await expect(first).rejects.toThrow("setup cancelled");
+    finishCurl();
+    await joined;
+    expect(download.calls.filter((call) => call[0] === "dpkg-deb")).toHaveLength(1);
+  });
+
+  it("starts no download for a caller already cancelled", async () => {
+    const h = await tempHome();
+    await mkdir(join(h, ".local/share/wechat"), { recursive: true });
+    const { run, calls } = scriptedDownload();
+    const runtime = new WechatUserRuntime({ home: h, canonicalPrefix: join(h, "wechat"), run });
+
+    const cancelled = new AbortController();
+    cancelled.abort(new Error("setup cancelled"));
+    await expect(runtime.install(cancelled.signal)).rejects.toThrow("setup cancelled");
+
+    expect(calls.some((call) => call[0] === "curl")).toBe(false);
+    expect(runtime.installInFlight).toBe(false);
   });
 
   it("keeps a cached archive that is the supported build", async () => {
