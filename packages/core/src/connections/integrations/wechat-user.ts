@@ -229,7 +229,8 @@ export interface WechatUserSetupDeps {
    *  under gdb in this container and blocks until a login derives the key, so the
    *  caller shows the scan walkthrough alongside it rather than waiting for a
    *  login first. */
-  recoverPassphrase: (signal: AbortSignal) => Promise<string>;
+  /** Launches the client on `display` and returns its store passphrase. */
+  recoverPassphrase: (signal: AbortSignal, display: string) => Promise<string>;
   /** Stage the capture driver inside this container before recovery runs. */
   stageDriver: () => Promise<void>;
   pollIntervalMs?: number;
@@ -286,7 +287,7 @@ export function makeWechatUserSetup(deps: WechatUserSetupDeps): SetupFn {
           body: [
             "Open the desktop and confirm the sign-in on your phone if WeChat asks. Your saved message keys are ready.",
           ],
-          links: [{ label: "Open Rome's desktop", url: runtime.desktopPath }],
+          links: [{ label: "Open Rome's desktop", url: initial.desktopPath }],
           progress: true,
         });
         await runtime.start(signal);
@@ -316,18 +317,21 @@ export function makeWechatUserSetup(deps: WechatUserSetupDeps): SetupFn {
         // A cached account store makes the client show a sign-in button, which
         // needs the desktop, so that case skips the QR stream.
         const remembered = (await runtime.status()).loggedIn;
-        interact.show(
-          remembered ? rememberedView(runtime.desktopPath) : scanView(runtime.desktopPath),
-        );
-        const recovery = deps.recoverPassphrase(signal);
+        // Recovery replaces any running client, so it starts on WeChat's own
+        // desktop. Recovery, the QR capture and the links all use the display
+        // this returns, never a legacy client's that a status() reports.
+        const display = await runtime.ensureDesktop(signal);
+        const desktopPath = runtime.desktopPathFor(display);
+        interact.show(remembered ? rememberedView(desktopPath) : scanView(desktopPath));
+        const recovery = deps.recoverPassphrase(signal, display);
         const qr = { stop: remembered };
         const qrLoop = (async () => {
           let last: string | undefined;
           while (!qr.stop && !signal.aborted) {
-            const shot = await runtime.captureLoginQr().catch(() => null);
+            const shot = await runtime.captureLoginQr(display).catch(() => null);
             if (shot && shot !== last) {
               last = shot;
-              interact.show(scanView(runtime.desktopPath, shot));
+              interact.show(scanView(desktopPath, shot));
             }
             await abortableDelay(qrPollIntervalMs, signal).catch(() => {});
           }
@@ -336,7 +340,7 @@ export function makeWechatUserSetup(deps: WechatUserSetupDeps): SetupFn {
           const passphrase = await recovery;
           qr.stop = true;
           await qrLoop;
-          interact.show(keysView(remembered, runtime.desktopPath));
+          interact.show(keysView(remembered, desktopPath));
           await waitFor(signal, (s) => s.loggedIn);
           // Derive and verify the per-database keys from the captured passphrase.
           const deadline = Date.now() + loginTimeoutMs;
@@ -408,11 +412,11 @@ export function createWechatUserDescriptor(
   const runtime = deps.runtime ?? new WechatUserRuntime();
   const reader = new WechatUserReader(runtime);
 
-  const recoverPassphrase = async (signal: AbortSignal): Promise<string> => {
+  const recoverPassphrase = async (signal: AbortSignal, display: string): Promise<string> => {
     const driverDir = await stageCaptureDriver(runtime.runtimeDir);
     try {
       return await recoverWechatPassphrase(
-        { driverDir, home: runtime.home, runtimeDir: runtime.runtimeDir, display: runtime.display },
+        { driverDir, home: runtime.home, runtimeDir: runtime.runtimeDir, display },
         signal,
       );
     } finally {
@@ -496,6 +500,10 @@ export function createWechatUserDescriptor(
                     // live; a restarted one got it from start(). Never throws,
                     // so it cannot degrade a client that reads fine.
                     await runtime.ensureAccessibility();
+                    if (epoch.signal.aborted) return;
+                    // The desktop outlives any one process on it; restart a part
+                    // that died, so the guardian can still reach the client.
+                    await runtime.repairDesktop(epoch.signal);
                     if (epoch.signal.aborted) return;
                   }
                   if (!status.running) {

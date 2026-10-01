@@ -4,11 +4,15 @@
 #
 # Usage: rome-start-desktop.sh <name> <display> <vnc-port> <novnc-port> [openbox-config]
 #
-# Idempotent: a process that already runs for this display and these ports is
-# reused, and only a missing one is started. Each program starts in its own
-# session, so it outlives this script and whoever ran it. Run it as the user the
-# desktop belongs to. Exits 1, with the reason on stderr, when the display or a
-# port belongs to something else or a program fails to start.
+# Idempotent: a process of this user's that already runs for this display and
+# these ports is reused, and only a missing one is started. Runs for the same
+# desktop take turns. Each program starts in its own session, so it outlives this
+# script and whoever ran it. Run it as the user the desktop belongs to. Its lock
+# and logs go to ROME_DESKTOP_LOG_DIR, by default ~/.cache/rome-desktop, which
+# must be private to this user. A run waits up to ROME_DESKTOP_LOCK_WAIT seconds
+# (60) for another run of the same desktop. Exits 1, with the reason on stderr,
+# when the display or a port belongs to something else, the lock stays busy, or
+# a program fails to start.
 set -euo pipefail
 
 if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
@@ -26,18 +30,46 @@ if ! [[ "$NAME" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || ! [[ "$DISPLAY_ID" =~ ^:[0-9]+$ 
   exit 2
 fi
 DISPLAY_NUM="${DISPLAY_ID#:}"
+# The lock and logs live where only this user can write. In /tmp another
+# account could create the lock first and keep the desktop from starting.
+LOG_DIR="${ROME_DESKTOP_LOG_DIR:-${HOME:?}/.cache/rome-desktop}"
+# The lock lives in this directory, so first runs can race to create it: a
+# directory another run just made counts as success.
+if [ ! -d "$LOG_DIR" ]; then
+  mkdir -p "$(dirname "$LOG_DIR")"
+  mkdir -m 700 "$LOG_DIR" 2>/dev/null || [ -d "$LOG_DIR" ]
+fi
+# A caller-set ROME_DESKTOP_LOG_DIR must be as private as the default: another
+# account that can write there could create the lock first, or plant a symlink
+# that the lock and the log redirects would follow.
+if [ ! -O "$LOG_DIR" ] || [ $((8#$(stat -L -c %a "$LOG_DIR") & 8#022)) -ne 0 ]; then
+  echo "Error: ${LOG_DIR} must be a directory only this user can write." >&2
+  exit 1
+fi
+OWNER_UID="$(id -u)"
+
+# Every check below reads, then starts. A second run for the same desktop would
+# otherwise see nothing running and start a duplicate that fails.
+# The programs close fd 9, or they would hold the lock for their whole life.
+exec 9>"${LOG_DIR}/.rome-desktop-${NAME}.lock"
+# Bounded, so a stuck run fails the next one clearly instead of hanging it.
+if ! flock -w "${ROME_DESKTOP_LOCK_WAIT:-60}" 9; then
+  echo "Error: another start of ${NAME} is still running." >&2
+  exit 1
+fi
 
 tcp_port_listening() {
   (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1
 }
 
-# True when a process matching $1 has every later argument as one of its argv
-# entries. The /proc files are read with grep -z and never piped: under
+# True when a process of this user's matching $1 has every later argument as one
+# of its argv entries. Another account's process with the same arguments is
+# never reused, so the guardian never sees or types into it. The /proc files are read with grep -z and never piped: under
 # pipefail, grep -q closing a pipe early would fail the writer and read as a miss.
 process_cmdline_contains_all() {
   local pattern="$1" pid needle missing
   shift
-  for pid in $(pgrep -f "$pattern" 2>/dev/null || true); do
+  for pid in $(pgrep -u "$OWNER_UID" -f "$pattern" 2>/dev/null || true); do
     missing=""
     for needle in "$@"; do
       if ! grep -zqFx -- "$needle" "/proc/${pid}/cmdline" 2>/dev/null; then
@@ -52,7 +84,7 @@ process_cmdline_contains_all() {
 
 process_env_contains() {
   local pid
-  for pid in $(pgrep -x "$1" 2>/dev/null || true); do
+  for pid in $(pgrep -u "$OWNER_UID" -x "$1" 2>/dev/null || true); do
     if grep -zqFx -- "$2" "/proc/${pid}/environ" 2>/dev/null; then
       return 0
     fi
@@ -92,9 +124,9 @@ wait_for_tcp_port() {
   fail "${label} did not start listening on :${port} within 30 seconds." "$log_file"
 }
 
-X_LOG="/tmp/xtigervnc-${NAME}.log"
-OPENBOX_LOG="/tmp/openbox-${NAME}.log"
-NOVNC_LOG="/tmp/novnc-${NAME}.log"
+X_LOG="${LOG_DIR}/xtigervnc-${NAME}.log"
+OPENBOX_LOG="${LOG_DIR}/openbox-${NAME}.log"
+NOVNC_LOG="${LOG_DIR}/novnc-${NAME}.log"
 
 X_PID=""
 if process_cmdline_contains_all Xtigervnc "$DISPLAY_ID" -rfbport "$VNC_PORT"; then
@@ -116,7 +148,7 @@ else
   echo "Starting TigerVNC for ${NAME} on ${DISPLAY_ID}, RFB :${VNC_PORT} ..."
   setsid Xtigervnc "$DISPLAY_ID" -geometry 1280x800 -depth 24 \
     -SecurityTypes None -localhost yes -rfbport "$VNC_PORT" \
-    -AlwaysShared -AcceptCutText -SendCutText -ac >"$X_LOG" 2>&1 </dev/null &
+    -AlwaysShared -AcceptCutText -SendCutText -ac >"$X_LOG" 2>&1 </dev/null 9>&- &
   X_PID=$!
 fi
 wait_for_tcp_port "$VNC_PORT" "TigerVNC for ${NAME}" "$X_PID" "$X_LOG"
@@ -124,7 +156,7 @@ wait_for_tcp_port "$VNC_PORT" "TigerVNC for ${NAME}" "$X_PID" "$X_LOG"
 if ! process_env_contains openbox "DISPLAY=${DISPLAY_ID}"; then
   OPENBOX_ARGS=()
   [ -n "$OPENBOX_CONFIG" ] && OPENBOX_ARGS=(--config-file "$OPENBOX_CONFIG")
-  DISPLAY="$DISPLAY_ID" setsid openbox "${OPENBOX_ARGS[@]}" >"$OPENBOX_LOG" 2>&1 </dev/null &
+  DISPLAY="$DISPLAY_ID" setsid openbox "${OPENBOX_ARGS[@]}" >"$OPENBOX_LOG" 2>&1 </dev/null 9>&- &
   OPENBOX_PID=$!
   # Openbox has no readiness signal. It exits at once when it cannot run.
   for _ in 1 2 3 4 5; do
@@ -139,7 +171,7 @@ if ! process_cmdline_contains_all websockify "127.0.0.1:${NOVNC_PORT}" "localhos
   if tcp_port_listening "$NOVNC_PORT"; then
     fail "TCP port ${NOVNC_PORT} is already in use by another process."
   fi
-  setsid websockify "127.0.0.1:${NOVNC_PORT}" "localhost:${VNC_PORT}" >"$NOVNC_LOG" 2>&1 </dev/null &
+  setsid websockify "127.0.0.1:${NOVNC_PORT}" "localhost:${VNC_PORT}" >"$NOVNC_LOG" 2>&1 </dev/null 9>&- &
   NOVNC_PID=$!
 fi
 wait_for_tcp_port "$NOVNC_PORT" "websockify for ${NAME}" "$NOVNC_PID" "$NOVNC_LOG"

@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { DESKTOP_SCRIPT, type DesktopSlot, desktopSlot, startDesktopArgs } from "../desktops.js";
 import { createLogger } from "../logger.js";
 
 const log = createLogger("wechat-user");
@@ -75,6 +76,12 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 /** Installing downloads and unpacks the better part of a gigabyte. */
 const INSTALL_TIMEOUT_MS = 20 * 60_000;
+/** The start script waits up to 30 s for each of its ports and 5 s for Openbox. */
+const DESKTOP_START_TIMEOUT_MS = 90_000;
+
+function sharedDisplay(): string {
+  return process.env.DISPLAY || ":99";
+}
 
 export interface RunResult {
   code: number | null;
@@ -158,6 +165,10 @@ export interface WechatUserStatus {
   /** The client's pid in THIS container's namespace. The key-recovery step
    *  is used only inside this container. */
   pid?: number;
+  /** The X display the running client is on, or the one a new client starts on. */
+  display: string;
+  /** The page that shows `display` to the guardian, for sign-in links. */
+  desktopPath: string;
 }
 
 // ── reader shapes ─────────────────────────────────────────────────────────
@@ -208,23 +219,6 @@ export class WechatUserSessionRejected extends Error {
   }
 }
 
-/**
- * WeChat's own X display (docs/wechat-personal.md): the one rule the runtime,
- * the desktop proxy and startup validation share. Null while WeChat is disabled
- * or WECHAT_USER_DISPLAY is unset; the entrypoint starts no such display then.
- * Like the entrypoint, a value that is not `:<number>`, or that names the shared
- * display, is an error.
- */
-export function wechatUserDisplay(env: NodeJS.ProcessEnv = process.env): string | null {
-  const display = env.WECHAT_USER_DISPLAY;
-  if (env.WECHAT_USER_ENABLED !== "true" || !display) return null;
-  const shared = env.DISPLAY || ":99";
-  if (!/^:\d+$/.test(display) || display === shared) {
-    throw new Error(`WECHAT_USER_DISPLAY must be a display like :100, other than ${shared}`);
-  }
-  return display;
-}
-
 /** The client or its reader could not be run. Transient by assumption. */
 export class WechatUserRuntimeError extends Error {
   constructor(message: string) {
@@ -252,9 +246,16 @@ export interface WechatUserRuntimeConfig {
   prefix?: string;
   /** The container's own home, where the client writes its store. */
   home?: string;
-  /** The X display the client runs on: WeChat's own display (`WECHAT_USER_DISPLAY`)
-   *  when set, else the shared desktop. */
+  /** A fixed X display for the client. It bypasses WeChat's own desktop, and
+   *  tests use it. */
   display?: string;
+  /** WeChat's own desktop. Defaults to the `wechat` row of the desktop table,
+   *  `desktopSlot("wechat")`. Null keeps the client on the shared desktop. */
+  desktop?: DesktopSlot | null;
+  /** The script that starts the desktop. Defaults to the one in the image. */
+  desktopScript?: string;
+  /** Where to read a running client's environment. Defaults to /proc. */
+  procDir?: string;
   /** The path the client is exposed at. Defaults to its canonical /opt/wechat;
    *  injectable so tests need no writable /opt. */
   canonicalPrefix?: string;
@@ -288,9 +289,10 @@ export function loginWindowId(tree: string): string | null {
 export class WechatUserRuntime {
   readonly prefix: string;
   readonly home: string;
-  readonly display: string;
-  /** The page that shows `display` to the guardian, for sign-in links. */
-  readonly desktopPath: string;
+  private readonly desktop: DesktopSlot | null;
+  private readonly desktopScript: string;
+  private readonly procDir: string;
+  private readonly startDisplay: string;
   readonly canonicalPrefix: string;
   readonly runtimeDir: string;
   readonly accessibilityLauncher: string;
@@ -300,12 +302,15 @@ export class WechatUserRuntime {
   constructor(config: WechatUserRuntimeConfig = {}) {
     this.home = config.home ?? process.env.HOME ?? homedir();
     this.prefix = config.prefix ?? join(this.home, ".local", "share", "wechat");
-    // WeChat's own display when one is configured (docs/wechat-personal.md), else
-    // the shared desktop. The client, its login window and the health check all
-    // live on this display.
-    const own = wechatUserDisplay();
-    this.display = config.display ?? (own || process.env.DISPLAY || ":99");
-    this.desktopPath = own && this.display === own ? "/desktop/wechat" : "/desktop";
+    // WeChat runs on its own desktop (docs/architecture/named-desktops.md).
+    this.desktop = config.display
+      ? null
+      : config.desktop !== undefined
+        ? config.desktop
+        : desktopSlot("wechat");
+    this.desktopScript = config.desktopScript ?? DESKTOP_SCRIPT;
+    this.procDir = config.procDir ?? "/proc";
+    this.startDisplay = config.display ?? this.desktop?.display ?? sharedDisplay();
     this.canonicalPrefix = config.canonicalPrefix ?? WECHAT_CANONICAL_PREFIX;
     this.runtimeDir = config.runtimeDir ?? wechatRuntimeDir();
     this.accessibilityLauncher = config.accessibilityLauncher ?? ACCESSIBILITY_LAUNCHER;
@@ -340,6 +345,18 @@ export class WechatUserRuntime {
     return null;
   }
 
+  /** The X display a new client starts on. Fixed for the runtime's life: a
+   *  running client's own display comes from `status()` or `clientDisplay()`,
+   *  and queries never change this. */
+  get display(): string {
+    return this.startDisplay;
+  }
+
+  /** The page that shows `display` to the guardian, for sign-in links. */
+  desktopPathFor(display: string): string {
+    return this.desktop && display === this.desktop.display ? "/desktop/wechat" : "/desktop";
+  }
+
   /** This dedicated container owns one WeChat client. Match its process name
    *  because ordinary and debugger launches can use different executable paths. */
   async pid(): Promise<number | null> {
@@ -347,6 +364,75 @@ export class WechatUserRuntime {
     const first = (found?.stdout ?? "").split("\n")[0]?.trim();
     const pid = first ? Number(first) : Number.NaN;
     return Number.isInteger(pid) && pid > 0 ? pid : null;
+  }
+
+  /**
+   * The display the client with this pid runs on: its own `DISPLAY`, else the
+   * start display. A client already on another display keeps it, because moving
+   * it would mean a restart, which can make the phone confirm again. It moves
+   * only when it next starts.
+   */
+  async clientDisplay(pid: number): Promise<string> {
+    if (!this.desktop) return this.startDisplay;
+    const environ = await readFile(join(this.procDir, String(pid), "environ"), "utf8").catch(
+      () => null,
+    );
+    const entry = environ?.split("\0").find((line) => line.startsWith("DISPLAY="));
+    return entry?.slice("DISPLAY=".length) || this.startDisplay;
+  }
+
+  /**
+   * Start whatever part of WeChat's own desktop has died under a running client
+   * on it, such as a crashed websockify that leaves /desktop/wechat broken.
+   * Does nothing for a client on another display. Never throws: a repair that
+   * fails is logged, and the client keeps running.
+   */
+  async repairDesktop(signal?: AbortSignal): Promise<void> {
+    const pid = await this.pid();
+    if (!this.desktop || !pid || (await this.clientDisplay(pid)) !== this.desktop.display) return;
+    try {
+      await this.ensureDesktop(signal);
+    } catch (error) {
+      log.warn("wechat_user.desktop_repair_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Start WeChat's own desktop, or reuse it, before a client starts on it. The
+   * desktop outlives Rome, so a Rome restart finds it running. Where the start
+   * script is not installed, as on a host `pnpm start`, the client stays on the
+   * shared desktop. Throws WechatUserRuntimeError when the desktop cannot start.
+   *
+   * Resolves to the display a new client should start on: `display`, or the
+   * shared one where the script is missing. It changes no runtime state, so a
+   * repair under a running client cannot move where anything else looks.
+   */
+  async ensureDesktop(signal?: AbortSignal): Promise<string> {
+    const desktop = this.desktop;
+    if (!desktop) return this.startDisplay;
+    if (!(await exists(this.desktopScript))) {
+      log.warn("wechat_user.desktop_unavailable", { script: this.desktopScript });
+      return sharedDisplay();
+    }
+    // env -i: the desktop's programs outlive Rome and need none of its
+    // configuration or credentials. ROME_DESKTOP_LOG_DIR passes through so this
+    // run and the entrypoint's take the same lock.
+    const env = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "ROME_DESKTOP_LOG_DIR"].flatMap(
+      (key) => (process.env[key] === undefined ? [] : [`${key}=${process.env[key]}`]),
+    );
+    const result = await this.run(
+      "env",
+      ["-i", ...env, "bash", this.desktopScript, ...startDesktopArgs("wechat", desktop)],
+      { timeoutMs: DESKTOP_START_TIMEOUT_MS, ...(signal ? { signal } : {}) },
+    );
+    if (result.code !== 0) {
+      throw new WechatUserRuntimeError(
+        `Could not start WeChat's desktop: ${result.stderr.trim() || `exit ${result.code}`}`,
+      );
+    }
+    return desktop.display;
   }
 
   /**
@@ -360,8 +446,8 @@ export class WechatUserRuntime {
    * the desktop link for that.) The capture runs against the container's own
    * display and needs no privilege.
    */
-  async captureLoginQr(): Promise<string | null> {
-    const env = { DISPLAY: this.display };
+  async captureLoginQr(display: string = this.startDisplay): Promise<string | null> {
+    const env = { DISPLAY: display };
     const tree = await this.run("xwininfo", ["-root", "-tree"], { env }).catch(() => null);
     if (!tree || tree.code !== 0) return null;
     const windowId = loginWindowId(tree.stdout);
@@ -376,9 +462,9 @@ export class WechatUserRuntime {
     return `data:image/png;base64,${encoded}`;
   }
 
-  private async hasLoginWindow(): Promise<boolean> {
+  private async hasLoginWindow(display: string): Promise<boolean> {
     const tree = await this.run("xwininfo", ["-root", "-tree"], {
-      env: { DISPLAY: this.display },
+      env: { DISPLAY: display },
     });
     if (tree.code !== 0) {
       throw new WechatUserRuntimeError("Could not inspect the WeChat desktop session.");
@@ -386,7 +472,7 @@ export class WechatUserRuntime {
     const windowId = loginWindowId(tree.stdout);
     if (!windowId) return false;
     const window = await this.run("xwininfo", ["-id", windowId, "-stats", "-size"], {
-      env: { DISPLAY: this.display },
+      env: { DISPLAY: display },
     });
     // Login can destroy the window between the tree snapshot and this lookup.
     if (window.code !== 0) return false;
@@ -400,6 +486,7 @@ export class WechatUserRuntime {
   async status(): Promise<WechatUserStatus> {
     const installed = await exists(join(this.clientDir, "wechat"));
     const pid = installed ? await this.pid() : null;
+    const display = pid ? await this.clientDisplay(pid) : this.startDisplay;
     const account = installed ? await this.accountDir() : null;
     let keysReady = false;
     if (account !== null && (await exists(this.keysFile))) {
@@ -417,7 +504,7 @@ export class WechatUserRuntime {
     let state: WechatUserState;
     if (!installed) state = "absent";
     else if (!pid) state = "stopped";
-    else if (await this.hasLoginWindow()) state = "awaiting-scan";
+    else if (await this.hasLoginWindow(display)) state = "awaiting-scan";
     else if (keysReady) state = "ready";
     else if (account) state = "awaiting-keys";
     else state = "starting";
@@ -430,6 +517,8 @@ export class WechatUserRuntime {
       keysReady,
       ...(account ? { wxid: account.split("/").pop() ?? undefined } : {}),
       ...(pid ? { pid } : {}),
+      display,
+      desktopPath: this.desktopPathFor(display),
     };
   }
 
@@ -576,9 +665,9 @@ export class WechatUserRuntime {
 
   /** The environment the client needs. Established empirically; the client
    *  faults or draws nothing without these. */
-  private clientEnv(): Record<string, string> {
+  private clientEnv(display: string = this.startDisplay): Record<string, string> {
     return {
-      DISPLAY: this.display,
+      DISPLAY: display,
       HOME: this.home,
       QT_QPA_PLATFORM: "xcb",
       LIBGL_ALWAYS_SOFTWARE: "1",
@@ -646,6 +735,7 @@ export class WechatUserRuntime {
   private async startClient(signal?: AbortSignal): Promise<void> {
     if (await this.pid()) return;
     if (signal?.aborted) throw signal.reason;
+    const display = await this.ensureDesktop(signal);
     await this.ensureClientLink();
     await this.prepareSession();
 
@@ -658,14 +748,14 @@ export class WechatUserRuntime {
         this.canonicalPrefix,
         join(this.prefix, "client.log"),
       ],
-      { env: this.clientEnv(), ...(signal ? { signal } : {}) },
+      { env: this.clientEnv(display), ...(signal ? { signal } : {}) },
     );
     if (started.code !== 0) {
       throw new WechatUserRuntimeError(
         `Could not start the WeChat client: ${started.stderr.trim() || "spawn failed"}`,
       );
     }
-    log.info("wechat_user.client_started", { display: this.display });
+    log.info("wechat_user.client_started", { display });
   }
 
   async stop(): Promise<void> {

@@ -1,7 +1,16 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:net";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +49,17 @@ async function freePort(): Promise<number> {
   return port;
 }
 
+function listening(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect(port, "127.0.0.1");
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => resolve(false));
+  });
+}
+
 function started(): { program: string; pid: number; args: string }[] {
   if (!existsSync(record)) return [];
   return readFileSync(record, "utf8")
@@ -62,9 +82,38 @@ function runWith(env: Record<string, string>, ...extra: string[]) {
     {
       encoding: "utf8",
       timeout: 60_000,
-      env: { ...env, PATH: `${dir}:${process.env.PATH}`, FAKE_RECORD: record },
+      env: {
+        PATH: `${dir}:${process.env.PATH}`,
+        FAKE_RECORD: record,
+        ROME_DESKTOP_LOG_DIR: dir,
+        ...env,
+      },
     },
   );
+}
+
+/** Two runs at once, as when a WeChat retry overlaps a start. */
+async function runTwiceAtOnce(count = 2, overrides: Record<string, string> = {}) {
+  const runs = Array.from({ length: count }, () => {
+    const child = spawn(
+      "bash",
+      [SCRIPT, "notes", `:${display}`, String(vncPort), String(novncPort)],
+      {
+        env: {
+          PATH: `${dir}:${process.env.PATH}`,
+          FAKE_RECORD: record,
+          ROME_DESKTOP_LOG_DIR: dir,
+          ...overrides,
+        },
+      },
+    );
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    return once(child, "exit").then(([code]) => ({ code: code as number, stderr }));
+  });
+  return Promise.all(runs);
 }
 
 beforeEach(async () => {
@@ -92,6 +141,139 @@ afterEach(() => {
 
 // The script and these tests read /proc and use setsid and pgrep, so they need Linux.
 describe.skipIf(process.platform !== "linux")("rome-start-desktop.sh", () => {
+  it("keeps its lock and logs in a directory only its user can write, by default", () => {
+    // /tmp would let another account create the lock first and block the start.
+    const home = join(dir, "home");
+    const result = spawnSync(
+      "bash",
+      [SCRIPT, "notes", `:${display}`, String(vncPort), String(novncPort)],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+        env: { PATH: `${dir}:${process.env.PATH}`, FAKE_RECORD: record, HOME: home },
+      },
+    );
+    expect(result.status).toBe(0);
+    const state = join(home, ".cache", "rome-desktop");
+    expect(statSync(state).mode & 0o777).toBe(0o700);
+    for (const file of [".rome-desktop-notes.lock", "xtigervnc-notes.log", "novnc-notes.log"]) {
+      expect(existsSync(join(state, file))).toBe(true);
+    }
+  }, 60_000);
+
+  it.each([
+    "777",
+    "770",
+    "1777",
+  ])("refuses a ROME_DESKTOP_LOG_DIR others can write to (mode %s)", (mode) => {
+    // Another account could pre-create the lock there, or plant a symlink the
+    // lock and log redirects would follow.
+    const shared = join(dir, "shared");
+    mkdirSync(shared);
+    chmodSync(shared, Number.parseInt(mode, 8));
+
+    const result = runWith({ ROME_DESKTOP_LOG_DIR: shared });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`${shared} must be a directory only this user can write`);
+    expect(started()).toEqual([]);
+  });
+
+  it("gives up quickly when another start holds the lock", () => {
+    const holder = spawn("flock", [join(dir, ".rome-desktop-notes.lock"), "sleep", "30"]);
+    try {
+      for (let i = 0; i < 100 && !existsSync(join(dir, ".rome-desktop-notes.lock")); i++) {
+        spawnSync("sleep", ["0.02"]);
+      }
+      const began = Date.now();
+      const result = spawnSync(
+        "bash",
+        [SCRIPT, "notes", `:${display}`, String(vncPort), String(novncPort)],
+        {
+          encoding: "utf8",
+          timeout: 20_000,
+          env: {
+            PATH: `${dir}:${process.env.PATH}`,
+            FAKE_RECORD: record,
+            ROME_DESKTOP_LOG_DIR: dir,
+            ROME_DESKTOP_LOCK_WAIT: "1",
+          },
+        },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("another start of notes is still running");
+      expect(Date.now() - began).toBeLessThan(10_000);
+      expect(started()).toEqual([]);
+    } finally {
+      holder.kill("SIGKILL");
+    }
+  }, 60_000);
+
+  it("writes its logs to ROME_DESKTOP_LOG_DIR", () => {
+    expect(run().status).toBe(0);
+    for (const log of ["xtigervnc", "openbox", "novnc"]) {
+      expect(existsSync(join(dir, `${log}-notes.log`))).toBe(true);
+    }
+  }, 60_000);
+
+  it("creates its default directory safely when first runs overlap", async () => {
+    // The lock lives in this directory, so creating it is not serialised.
+    const home = join(dir, "home");
+    const env = { HOME: home, ROME_DESKTOP_LOG_DIR: "" };
+    const results = await runTwiceAtOnce(6, env);
+
+    expect(results.map(({ code, stderr }) => ({ code, stderr }))).toEqual(
+      Array.from({ length: 6 }, () => ({ code: 0, stderr: "" })),
+    );
+    expect(statSync(join(home, ".cache", "rome-desktop")).mode & 0o777).toBe(0o700);
+  }, 60_000);
+
+  it("starts each program once when two runs overlap", async () => {
+    const results = await runTwiceAtOnce();
+
+    expect(results).toEqual([
+      { code: 0, stderr: "" },
+      { code: 0, stderr: "" },
+    ]);
+    expect(started().map((proc) => proc.program)).toEqual(["Xtigervnc", "openbox", "websockify"]);
+  }, 60_000);
+
+  it("never reuses a matching process another user owns", async () => {
+    // A pgrep stand-in hides the "other user's" websockify from an owner-checked
+    // lookup (-u), the way the real pgrep hides another account's processes.
+    const realPgrep = spawnSync("sh", ["-c", "command -v pgrep"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    writeFileSync(
+      join(dir, "pgrep"),
+      `#!/bin/sh\ncase " $* " in\n  *" -u "*) ${realPgrep} "$@" | grep -vx "$FOREIGN_PID" ;;\n  *) exec ${realPgrep} "$@" ;;\nesac\n`,
+    );
+    chmodSync(join(dir, "pgrep"), 0o755);
+    const foreign = spawn(
+      join(dir, "websockify"),
+      [`127.0.0.1:${novncPort}`, `localhost:${vncPort}`],
+      {
+        // PATH lets the stand-in's `env node` find node where CI installs it.
+        env: { FAKE_RECORD: join(dir, "foreign-record"), PATH: process.env.PATH ?? "" },
+      },
+    );
+    await once(foreign, "spawn");
+    // Wait until it listens, so the test never passes on a process that died.
+    for (let i = 0; i < 250 && !(await listening(novncPort)); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(await listening(novncPort)).toBe(true);
+    try {
+      const result = runWith({ FOREIGN_PID: String(foreign.pid) });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`TCP port ${novncPort} is already in use by another process`);
+    } finally {
+      foreign.kill("SIGKILL");
+    }
+  }, 60_000);
+
   it("starts the desktop detached, then reuses it", () => {
     const first = run("/rc.xml");
     expect(first.stderr).toBe("");
