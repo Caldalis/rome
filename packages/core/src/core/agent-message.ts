@@ -1,7 +1,7 @@
 import type { AgentDeltaEvent } from "@rome-os/app-runtime";
 
 /** Per-turn terminals — result or error — produced by an agent. Works
- *  generically over `AgentMessage`, `StreamAgentMessage`, and
+ *  generically over `AgentEvent`, `StreamAgentEvent`, and
  *  `TraceEventDto`, all of which discriminate on `type`. */
 export function isTerminalEvent<T extends { type: string }>(
   m: T,
