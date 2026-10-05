@@ -47,6 +47,7 @@ import { artifactLocalName } from "@/lib/artifact-name";
 import {
   buildChatView,
   buildRows,
+  isAwaitingGuardian,
   type AgentIdentity,
   type HandoffNode,
 } from "@/components/chat/chat-view";
@@ -59,6 +60,7 @@ import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
 import { ChatTimelineRail } from "@/components/chat/ChatTimelineRail";
 import { buildTimelineQuestions } from "@/components/chat/chat-timeline";
 import { useStreamingSessions } from "@/hooks/use-streaming-sessions";
+import { useChatTabStatus } from "@/hooks/use-tab-status";
 import { useSseEvents } from "@/hooks/use-sse-events";
 import { renderFlatEntries, renderSingleEntry } from "@/components/chat/entries";
 import {
@@ -309,6 +311,10 @@ export const Chat = forwardRef<ChatHandle, ChatProps>(function ChatView(
     end: endSessionStream,
   } = useStreamingSessions();
   const [streamError, setStreamError] = useState<string | ChatErrorNotice | null>(null);
+  // Turns in this chat the server reported finished (a terminal stream event).
+  // A dropped connection ends the local stream but not the turn, so it never
+  // counts here.
+  const [turnEnds, setTurnEnds] = useState(0);
   const [streamReconnectRevision, setStreamReconnectRevision] = useState(0);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [traceDrawerTarget, setTraceDrawerTarget] = useState<TraceDrawerTarget | null>(null);
@@ -530,6 +536,10 @@ export const Chat = forwardRef<ChatHandle, ChatProps>(function ChatView(
   const currentSnapshot = floorSessionStream?.snapshot ?? null;
   const runningTurnId = floorSessionStream?.turnId ?? null;
   const isActiveSessionStreaming = !!floorSessionStream;
+  const awaitingGuardian = useMemo(
+    () => isAwaitingGuardian(view, runningTurnId),
+    [view, runningTurnId],
+  );
   // Typewriter-paced reveal of the latest assistant text block — the SSE
   // stream updates in provider-sized deltas; this smooths them into typing.
   // Keyed by turn + block: a new block retypes from zero (delayed fold — it
@@ -825,6 +835,7 @@ export const Chat = forwardRef<ChatHandle, ChatProps>(function ChatView(
             } catch {
               // ignore parse errors
             }
+            if (isReadVisibleSession(sessionId)) setTurnEnds((n) => n + 1);
             shouldStop = true;
             break;
           }
@@ -842,6 +853,7 @@ export const Chat = forwardRef<ChatHandle, ChatProps>(function ChatView(
             } catch {
               // ignore parse errors
             }
+            if (isReadVisibleSession(sessionId)) setTurnEnds((n) => n + 1);
             shouldStop = true;
             break;
           }
@@ -943,7 +955,7 @@ export const Chat = forwardRef<ChatHandle, ChatProps>(function ChatView(
       // After stream ends, reload messages from DB (gets both trace + assistant)
       await loadMessages(sessionId, { force: true, dropLocalOptimistic: true });
     },
-    [loadMessages, t, updateSessionSnapshot, updateSessionAssistantText],
+    [loadMessages, t, updateSessionSnapshot, updateSessionAssistantText, isReadVisibleSession],
   );
 
   useEffect(() => {
@@ -1411,6 +1423,13 @@ export const Chat = forwardRef<ChatHandle, ChatProps>(function ChatView(
   const activeSubmission = useMemo(
     () => (floorHandoff ? findActiveSubmission(floorMessages) : null),
     [floorHandoff, floorMessages],
+  );
+  // A submission waiting on Approve is the specialist asking the guardian, the
+  // same as an open card.
+  useChatTabStatus(
+    isActiveSessionStreaming,
+    awaitingGuardian || activeSubmission !== null,
+    turnEnds,
   );
 
   // Verbal approval: the specialist relays the guardian's "yes" via
