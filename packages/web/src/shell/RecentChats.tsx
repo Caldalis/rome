@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -30,6 +31,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { renameSession } from "@/lib/chat-api";
 import { DEFAULT_PROJECT_NAME } from "@/lib/chat-constants";
 import { usePinnedProjects } from "@/hooks/use-pinned-projects";
+import { useSseEvents } from "@/hooks/use-sse-events";
 import {
   emitSessionsChanged,
   useArchiveSession,
@@ -45,11 +47,100 @@ interface ChatSession {
   activityAt: string;
   lastSeenActivityAt: string | null;
   unread: boolean;
+  running?: boolean;
+  lastTurnFailed?: boolean;
   projectName: string;
   projectPath: string;
   archivedAt: string | null;
   archived: boolean;
   pinnedAt: string | null;
+}
+
+/** What a chat row's mark says; the open chat shows none, since its pane does. */
+export type ChatRowStatus = "running" | "failed" | "done";
+
+export function chatRowStatus(
+  session: Pick<ChatSession, "running" | "lastTurnFailed" | "unread">,
+  isActive: boolean,
+): ChatRowStatus | null {
+  if (isActive) return null;
+  // The list hides lastTurnFailed while a retry runs, and a live start
+  // clears it, so a failure never outranks a running retry.
+  if (session.lastTurnFailed) return "failed";
+  if (session.running) return "running";
+  if (session.unread) return "done";
+  return null;
+}
+
+function withLiveRunning<T extends Pick<ChatSession, "id" | "running" | "lastTurnFailed">>(
+  session: T,
+  live: ReadonlyMap<string, boolean>,
+): T {
+  const running = live.get(session.id);
+  if (running === undefined) return session;
+  return { ...session, running, lastTurnFailed: running ? false : session.lastTurnFailed };
+}
+
+const sessionRunningSchema = z.object({ sessionId: z.string(), running: z.boolean() });
+
+// Same shapes as the browser tab badge: an open ring (spinning here), a solid
+// "!" badge and a check mark.
+function ChatStatusGlyph({ status }: { status: ChatRowStatus }) {
+  if (status === "running") {
+    return (
+      <svg
+        viewBox="0 0 16 16"
+        fill="none"
+        className="h-4 w-4 animate-spin text-running motion-reduce:animate-none"
+        aria-hidden
+      >
+        <circle
+          cx="8"
+          cy="8"
+          r="5.5"
+          stroke="currentColor"
+          strokeOpacity="0.2"
+          strokeWidth="1.75"
+        />
+        <path
+          d="M8 2.5A5.5 5.5 0 1 1 2.5 8"
+          stroke="currentColor"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <svg viewBox="0 0 16 16" fill="none" className="h-4 w-4 text-warning" aria-hidden>
+        <circle cx="8" cy="8" r="6.5" fill="currentColor" />
+        <g className="text-(--warning-foreground)">
+          <line
+            x1="8"
+            y1="4.2"
+            x2="8"
+            y2="7.9"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+          />
+          <circle cx="8" cy="11.3" r="1.05" fill="currentColor" />
+        </g>
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 16 16" fill="none" className="h-4 w-4 text-success" aria-hidden>
+      <polyline
+        points="3.5,8.5 6.75,11.5 12.5,4.75"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 type GroupMode = "project" | "date";
@@ -151,10 +242,22 @@ const PROJECT_LOAD_MORE_COUNT = 10;
 const SESSION_NAME_MAX_LENGTH = 50;
 
 /**
- * The chat's name, linking to the chat and revealing its full text in a
- * tooltip while the sidebar is too narrow to show it whole.
+ * The chat's name, linking to the chat. Its tooltip shows the full name while
+ * the sidebar is too narrow to show it whole, and the row's status.
  */
-function ChatRowLink({ id, name, nested }: { id: string; name: string; nested: boolean }) {
+function ChatRowLink({
+  id,
+  name,
+  nested,
+  statusLabel,
+}: {
+  id: string;
+  name: string;
+  nested: boolean;
+  /** The row mark's meaning. The "…" menu takes the mark's slot on hover, so
+   *  the row's tooltip says it instead. */
+  statusLabel: string | null;
+}) {
   // Whether the one-line name is actually clipped ("Rewrite the sessi…").
   // Measured lazily right before the tooltip could open (pointerenter /
   // focus) rather than with a ResizeObserver: the answer only matters at that
@@ -191,7 +294,12 @@ function ChatRowLink({ id, name, nested }: { id: string; name: string; nested: b
       </TooltipTrigger>
       {/* Right of the row, so the bubble reaches into the page rather than
           covering the neighbouring chats it was opened to compare against. */}
-      {nameClipped ? <TooltipContent side="right">{name}</TooltipContent> : null}
+      {nameClipped || statusLabel ? (
+        <TooltipContent side="right">
+          {nameClipped ? <div>{name}</div> : null}
+          {statusLabel ? <div>{statusLabel}</div> : null}
+        </TooltipContent>
+      ) : null}
     </Tooltip>
   );
 }
@@ -222,6 +330,10 @@ export function RecentChats({ onSearch }: RecentChatsProps) {
   const activeSessionId = activeSessionFromPath(location.pathname);
   const searchShortcut = chatSearchShortcutForPlatform();
 
+  // The newest running state the status stream has reported per chat. A list
+  // response can be older than an event that arrived while it was in flight,
+  // so the stream's word wins over the row's.
+  const liveRunning = useRef(new Map<string, boolean>());
   const loadSessions = useCallback(async () => {
     try {
       const query = statusFilter === "active" ? "" : `?status=${statusFilter}`;
@@ -231,7 +343,11 @@ export function RecentChats({ onSearch }: RecentChatsProps) {
         return;
       }
       const data = (await res.json()) as ChatSession[];
-      setSessions(data.map((s) => ({ ...s, archived: Boolean(s.archivedAt) })));
+      setSessions(
+        data.map((s) =>
+          withLiveRunning({ ...s, archived: Boolean(s.archivedAt) }, liveRunning.current),
+        ),
+      );
       setPhase("ready");
     } catch {
       setPhase("error");
@@ -245,6 +361,32 @@ export function RecentChats({ onSearch }: RecentChatsProps) {
   useSessionsChanged(() => {
     void loadSessions();
   });
+
+  // Live running state. A stop refetches the list for unread and
+  // lastTurnFailed, and a reconnect refetches whatever changed meanwhile.
+  useSseEvents(
+    "/api/chat/status/events",
+    {
+      session_running: {
+        schema: sessionRunningSchema,
+        fn: ({ sessionId, running }) => {
+          liveRunning.current.set(sessionId, running);
+          setSessions((prev) =>
+            prev.map((s) => (s.id === sessionId ? withLiveRunning(s, liveRunning.current) : s)),
+          );
+          if (!running) void loadSessions();
+        },
+      },
+    },
+    {
+      // Events missed while disconnected are gone, so start over from the list
+      // and the snapshot the new connection sends.
+      onReconnect: () => {
+        liveRunning.current.clear();
+        void loadSessions();
+      },
+    },
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -492,7 +634,8 @@ export function RecentChats({ onSearch }: RecentChatsProps) {
 
   const renderChatRow = (session: ChatSession, nested = false) => {
     const isActive = activeSessionId === session.id;
-    const unread = session.unread && !isActive;
+    const status = chatRowStatus(session, isActive);
+    const statusLabel = status ? t(`recentChats.rowStatus.${status}`) : null;
     const isEditing = editingId === session.id;
     const togglePin = () => void setPinned(session.id, !session.pinnedAt);
     const beginRename = () => startRename(session);
@@ -539,19 +682,26 @@ export function RecentChats({ onSearch }: RecentChatsProps) {
             }`}
           />
         ) : (
-          <ChatRowLink id={session.id} name={session.name} nested={nested} />
+          <ChatRowLink
+            id={session.id}
+            name={session.name}
+            nested={nested}
+            statusLabel={statusLabel}
+          />
         )}
         <span
           className={`relative mr-2 flex h-4 w-4 shrink-0 items-center justify-center ${
             isEditing ? "hidden" : ""
           }`}
         >
-          {unread ? (
+          {status ? (
             <span
-              className="h-2 w-2 rounded-full bg-info transition-opacity group-hover:opacity-0"
+              className="flex transition-opacity group-hover:opacity-0"
               role="img"
-              aria-label={t("recentChats.unread")}
-            />
+              aria-label={statusLabel ?? undefined}
+            >
+              <ChatStatusGlyph status={status} />
+            </span>
           ) : null}
           <DropdownMenu
             open={openMenuId === session.id}
