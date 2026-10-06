@@ -321,6 +321,28 @@ export const sessionLastTurnFailed = sql<boolean>`coalesce((
   order by b."seq" desc
   limit 1
 ), 0)`.mapWith(Boolean);
+// Whether the session waits on the guardian: a card (question, connect-AI,
+// app component) posted since their last message, or an approval still
+// pending in this chat. Any answer to a card is saved as a user message, so a
+// card after the last one is still open. rowid is insertion order. Every reply
+// adds an auto-approved row to `approvals`, so the pending thread ids are
+// collected once per list rather than scanned per chat. json_valid and the
+// object check skip rows that aren't block arrays (non-JSON, or legacy plain
+// text), which would otherwise fail the whole list.
+export const sessionAwaitingGuardian = sql<boolean>`(exists (
+  select 1 from "rome_agent_messages" m, json_each(m."content") part
+  where m."session_id" = "rome_sessions"."id" and m."role" = 'assistant'
+  and json_valid(m."content")
+  and m."rowid" > coalesce((
+    select max(u."rowid") from "rome_agent_messages" u
+    where u."session_id" = "rome_sessions"."id" and u."role" = 'user'
+  ), 0)
+  and case when part."type" = 'object' then json_extract(part."value", '$.type') end = 'pending_interaction'
+) or "rome_sessions"."id" in (
+  select json_extract(a."payload", '$.channelContext.threadId') from "approvals" a
+  where a."status" = 'pending'
+  and json_extract(a."payload", '$.channelContext.threadId') is not null
+))`.mapWith(Boolean);
 const SESSION_DELETE_CHUNK_SIZE = 500;
 const CONVERSATION_CONTEXT_NOTIFICATION_LIMIT = 20;
 const SQL_LIKE_ESCAPE = "\\";
@@ -1324,7 +1346,11 @@ export class WebChatRepository {
           ? isNotNull(romeSessions.archivedAt)
           : undefined;
     return this.db
-      .select({ ...sessionSelectFields, lastTurnFailed: sessionLastTurnFailed })
+      .select({
+        ...sessionSelectFields,
+        lastTurnFailed: sessionLastTurnFailed,
+        awaitingGuardian: sessionAwaitingGuardian,
+      })
       .from(romeSessions)
       .where(and(eq(romeSessions.type, "webchat"), archivePredicate))
       .orderBy(desc(romeSessions.activityAt), desc(romeSessions.createdAt), desc(romeSessions.id));
