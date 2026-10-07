@@ -1,5 +1,6 @@
 import { createNodeDevicesService } from "./lib/node-devices.js";
 import { createPairingAdmission } from "./channels/pairing.js";
+import { createAgentsGuardianLink } from "./channels/agents-guardian.js";
 import { dirname, join } from "node:path";
 import { fork } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
@@ -17,6 +18,7 @@ import { NotifyClient } from "./lib/notify-client.js";
 import { recordResolvedAccount } from "./lib/guardian-auth-state.js";
 import { systemClock } from "./lib/clock.js";
 import { provisionRelayMailboxAtBoot } from "./lib/rome-cloud-relay.js";
+import { createRomeCloudAgentsClient } from "./lib/rome-cloud-agents.js";
 import { createNodeCallerProvisioner } from "./lib/rome-node-provisioning.js";
 import { getConfiguredInstanceOrigin, getRomeCloudOrigin } from "./lib/rome-cloud-origin.js";
 import { UsageOutboxRepository } from "./db/repositories/usage-outbox.js";
@@ -66,6 +68,7 @@ import { WhatsAppStoreRepository } from "./db/repositories/whatsapp-store.js";
 import { LinkedInAccounts } from "./channels/linkedin-accounts.js";
 import { WhatsAppAccounts } from "./channels/whatsapp-accounts.js";
 import { createAccountNames } from "./channels/account-names.js";
+import { agentsAccounts } from "./channels/agents-accounts.js";
 import { channelList } from "./channels/channel-list.js";
 import { sendApprovalCard } from "./actions/approval-card.js";
 import { createChannelsService } from "./channels/channels-service.js";
@@ -186,6 +189,7 @@ import {
 } from "./apps/artifact-id.js";
 import { ConnectionRegistry, DrizzleGrantLedger, createTalkRouter } from "./connections/index.js";
 import { SetupManager } from "./connections/setup/manager.js";
+import { AGENTS_SERVICE } from "./connections/integrations/agents.js";
 import { registerBuiltinConnections } from "./connections/integrations/index.js";
 import {
   ConversationSettingsRepository,
@@ -317,14 +321,25 @@ async function main() {
   // the load()/import that hydrate + rebuild live connections run LATER — after
   // the message hook exists, so the first Talk unlock can attach its subscription.
   const connectionRegistry = new ConnectionRegistry({ ledger: new DrizzleGrantLedger(db) });
+  const pairingAdmission = createPairingAdmission({
+    approvalsRepo,
+    personMappingRepo,
+    talkGrants: (service) =>
+      connectionRegistry.getDescriptor(service)?.capabilities.talker?.needs ?? [],
+  });
+  const linkAgentToGuardian = createAgentsGuardianLink({
+    personMappingRepo,
+    settingsRepo,
+    channel: AGENTS_SERVICE,
+  });
   const talkRouter = createTalkRouter(
     connectionRegistry,
-    createPairingAdmission({
-      approvalsRepo,
-      personMappingRepo,
-      talkGrants: (service) =>
-        connectionRegistry.getDescriptor(service)?.capabilities.talker?.needs ?? [],
-    }),
+    async (connectionId, service, message, router) => {
+      // Before the inbox resolves the sender, so the first message already
+      // reads as the guardian's.
+      if (service === AGENTS_SERVICE) await linkAgentToGuardian(message);
+      return pairingAdmission(connectionId, service, message, router);
+    },
   );
   // How app actions — here and, over RPC, in workers — send and read on
   // channels by name. The channel list is built further down, and the service
@@ -1088,6 +1103,13 @@ async function main() {
     linkedInAccounts,
     ...(wechatUserReader ? { wechatUserReader } : {}),
     connections: { registry: connectionRegistry, router: talkRouter },
+    connectionAccounts: {
+      [AGENTS_SERVICE]: agentsAccounts({
+        client: createRomeCloudAgentsClient(),
+        isConnected: () =>
+          connectionRegistry.find(AGENTS_SERVICE).some((conn) => conn.talk !== null),
+      }),
+    },
   });
   builtChannels = channels;
   const accountNames = createAccountNames({ channels, sentinelLogRepo });
