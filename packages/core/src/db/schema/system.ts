@@ -844,6 +844,9 @@ export const routineRuns = sqliteTable(
       enum: ["success", "error", "running", "pending_approval", "cancelled"],
     }).notNull(),
     payload: text("payload", { mode: "json" }),
+    // The routine's trigger type when it fired, or `run_now` for a manual run.
+    // Null on runs recorded before this column existed.
+    firedBy: text("fired_by"),
     firedAt: integer("fired_at", { mode: "timestamp" }).notNull(),
     durationMs: integer("duration_ms"),
     error: text("error"),
@@ -852,6 +855,7 @@ export const routineRuns = sqliteTable(
     index("idx_routine_runs_routine_id").on(table.routineId),
     index("idx_routine_runs_fired_at").on(table.firedAt),
     index("idx_routine_runs_status").on(table.status),
+    index("idx_routine_runs_execution_id").on(table.executionId),
   ],
 );
 
