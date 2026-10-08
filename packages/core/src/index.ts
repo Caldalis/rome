@@ -1141,7 +1141,7 @@ async function main() {
       [AGENTS_SERVICE]: agentsAccounts({
         client: createRomeCloudAgentsClient(),
         isConnected: () =>
-          connectionRegistry.find(AGENTS_SERVICE).some((conn) => conn.talk !== null),
+          connectionRegistry.find(AGENTS_SERVICE).some((conn) => conn.isUnlocked("talk")),
       }),
     },
   });
