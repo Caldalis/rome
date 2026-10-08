@@ -392,12 +392,14 @@ interface CodexFailureClassification {
 function codexErrorEvent(
   error: string,
   classification: Pick<CodexFailureClassification, "code" | "httpStatus">,
+  accounting?: TurnErrorEvent["accounting"],
 ): TurnErrorEvent {
   return {
     type: "error",
     error,
     ...(classification.code ? { code: classification.code } : {}),
     ...(classification.httpStatus !== undefined ? { httpStatus: classification.httpStatus } : {}),
+    ...(accounting ? { accounting } : {}),
   };
 }
 
@@ -949,6 +951,25 @@ export class CodexAppServerProvider implements ModelProvider {
     // normal source turn while its dynamic callbacks and event sink are borrowed.
     const turnCoordinator = new SerialTurnCoordinator();
 
+    const turnAccounting = (turn: ActiveTurn, failed: boolean) =>
+      buildOpenAiAccounting({
+        usage: toSdkUsage(turn.usage),
+        model: modelName,
+        agentName: params.agentName,
+        appStoreListingId: params.appStoreListingId,
+        reportedCostUsd: calculateTurnCostUsd(turn.requestUsages, modelName),
+        stop: codexStop(turn.nativeStatus ?? undefined, failed),
+        stopReason: failed ? "error" : "end_turn",
+        durationMs: Date.now() - turn.startedAt,
+      });
+
+    // A failed turn still counts, and its token cost comes from the
+    // accounting on its terminal (docs/concepts/sessions.md#turn). A turn
+    // that failed before Codex reported any usage gets none, because
+    // accounting built from no usage prices the failure at $0.
+    const failedTurnAccounting = (turn: ActiveTurn) =>
+      turn.usage ? turnAccounting(turn, true) : undefined;
+
     // The payer each source input was sent under. Codex may replace its
     // process while an input waits in the turn lane or in buildTurnInput.
     const payerAtSend = new WeakMap<ModelUserInput, string | null>();
@@ -1057,25 +1078,17 @@ export class CodexAppServerProvider implements ModelProvider {
         if (!closed && !runtime.isClosed()) {
           if (turn.errorMessage) {
             runtime.sink.push(
-              codexErrorEvent(turn.errorMessage, {
-                code: turn.errorCode,
-                httpStatus: turn.errorHttpStatus,
-              }),
+              codexErrorEvent(
+                turn.errorMessage,
+                { code: turn.errorCode, httpStatus: turn.errorHttpStatus },
+                failedTurnAccounting(turn),
+              ),
             );
           } else {
             if (runtime === sourceRuntime && turn.turnId) {
               lastCompletedTurnCheckpoint = turn.turnId;
             }
-            const accounting = buildOpenAiAccounting({
-              usage: toSdkUsage(turn.usage),
-              model: modelName,
-              agentName: params.agentName,
-              appStoreListingId: params.appStoreListingId,
-              reportedCostUsd: calculateTurnCostUsd(turn.requestUsages, modelName),
-              stop: codexStop(turn.nativeStatus ?? undefined),
-              stopReason: turn.failed ? "error" : "end_turn",
-              durationMs: Date.now() - turn.startedAt,
-            });
+            const accounting = turnAccounting(turn, turn.failed);
             if (params.outputSchema) {
               try {
                 const structuredOutput: unknown = JSON.parse(turn.finalText);
@@ -1113,7 +1126,13 @@ export class CodexAppServerProvider implements ModelProvider {
         const classification = classifyCodexFailure(err, this.options);
         if (classification.pending) await classification.pending;
         if (!closed && !runtime.isClosed()) {
-          runtime.sink.push(codexErrorEvent(classification.error ?? message, classification));
+          runtime.sink.push(
+            codexErrorEvent(
+              classification.error ?? message,
+              classification,
+              failedTurnAccounting(turn),
+            ),
+          );
         }
       } finally {
         if (runtime === sourceRuntime) resolveSourceStarted?.();
