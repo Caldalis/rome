@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@rstest/core";
 import type { SessionActor } from "../lib/session-actor.js";
-import { UsageAttributionResolver, type UsageAttributionSources } from "./attribution.js";
+import {
+  SKILL_REVIEW_INITIATOR,
+  UsageAttributionResolver,
+  type UsageAttributionSources,
+} from "./attribution.js";
 
 type Row = NonNullable<Awaited<ReturnType<UsageAttributionSources["getSession"]>>>;
 
@@ -164,6 +168,23 @@ describe("UsageAttributionResolver.forTurn", () => {
     expect((await r.forTurn(turn("loopback"))).trigger).toBe("background");
     expect((await r.forTurn(turn("ranNow"))).trigger).toBe("user");
     expect((await r.forTurn(turn("onEmail"))).trigger).toBe("event");
+  });
+
+  it("counts the skill review core starts after a turn as background", async () => {
+    const sessions = {
+      review: session({
+        type: "action",
+        triggerExecutionId: "exec-review",
+        rootActionExecutionId: "exec-review",
+        triggerActionName: "news.digest",
+      }),
+    };
+    const r = resolver(sessions, { "exec-review": SKILL_REVIEW_INITIATOR });
+    expect(await r.forTurn(turn("review"))).toEqual({
+      kind: "app",
+      appId: "@rome/news",
+      trigger: "background",
+    });
   });
 
   it("falls back to the turn's session type when the row is missing or the root is gone", async () => {
