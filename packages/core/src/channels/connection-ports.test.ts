@@ -70,11 +70,10 @@ testMessagesQueryContract("connection-backed messages", () => {
   const deps = {
     registry: {
       getDescriptor: () => ({ capabilities: { talker: { history: true } } }),
-      find: () => [{ id: "conn-1" }],
+      find: () => [{ id: "conn-1", talk: { history, subscribe: () => () => {} } }],
       onUnlocked: () => {},
       registeredServices: () => ["telegram_user"],
     },
-    router: { feature: () => history },
   } as unknown as ConnectionPortsDeps;
   const messages = connectionPorts(deps, "telegram_user")?.messages;
   if (!messages) throw new Error("a talker with history backs the channel's messages");
@@ -99,11 +98,10 @@ describe("connection-backed messages", () => {
     const deps = {
       registry: {
         getDescriptor: () => ({ capabilities: { talker: { history: true } } }),
-        find: () => [{ id: "conn-1" }],
+        find: () => [{ id: "conn-1", talk: { history, subscribe: () => () => {} } }],
         onUnlocked: () => {},
         registeredServices: () => ["telegram_user"],
       },
-      router: { feature: () => history },
     } as unknown as ConnectionPortsDeps;
     const messages = connectionPorts(deps, "telegram_user")?.messages;
 
@@ -122,18 +120,14 @@ describe("connection-backed messages", () => {
 describe("connection-backed messages, across conversations", () => {
   it("answers the newest lines first whatever order the history joins them in", async () => {
     const lines = [said("a-old", "dm-1", 3), said("a-new", "dm-1", 1), said("b-mid", "dm-2", 2)];
-    const history = historyFeature(
-      { fetchHistory: async () => lines },
-      { channel: "telegram_user" },
-    );
+    const history = historyOver(async () => lines);
     const deps = {
       registry: {
         getDescriptor: () => ({ capabilities: { talker: { history: true } } }),
-        find: () => [{ id: "conn-1" }],
+        find: () => [{ id: "conn-1", talk: { history, subscribe: () => () => {} } }],
         onUnlocked: () => {},
         registeredServices: () => ["telegram_user"],
       },
-      router: { feature: () => history },
     } as unknown as ConnectionPortsDeps;
     const messages = connectionPorts(deps, "telegram_user")?.messages;
 
@@ -171,11 +165,10 @@ describe("connection-backed messages, shared reads", () => {
     const deps = {
       registry: {
         getDescriptor: () => ({ capabilities: { talker: { history: true } } }),
-        find: () => [{ id: "conn-1" }],
+        find: () => [{ id: "conn-1", talk: { history: { query }, subscribe: () => () => {} } }],
         onUnlocked: () => {},
         registeredServices: () => ["telegram_user"],
       },
-      router: { feature: () => ({ query }) },
     } as unknown as ConnectionPortsDeps;
     const messages = connectionPorts(deps, "telegram_user")?.messages;
     if (!messages) throw new Error("a talker with history backs the channel's messages");

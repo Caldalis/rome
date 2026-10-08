@@ -13,10 +13,11 @@ import type {
   InboundEvent,
   TalkDirectMessaging,
 } from "@rome-os/app-runtime";
-import type { TalkRouter } from "../connections/types.js";
+import type { Connection } from "../connections/types.js";
 import { historyWindowHours } from "../connections/integrations/talk-features.js";
-import type { ConnectionRegistry } from "../connections/registry.js";
+import { requireTalk, type ConnectionRegistry } from "../connections/registry.js";
 import { createLogger } from "../logger.js";
+import { type Admission, OrderedAdmission, type OrderedAdmissionOptions } from "./admission.js";
 import { ChannelNotConnected, type ChannelDirectory, type ChannelSend } from "./channel.js";
 import { ConversationBuffers } from "./conversation-buffer.js";
 import { MAX_QUERY_LIMIT, queryLimit, type Messages } from "./messages.js";
@@ -28,9 +29,11 @@ export interface ConnectionPortsDeps {
     ConnectionRegistry,
     "find" | "getDescriptor" | "onUnlocked" | "registeredServices"
   >;
-  /** The router runs the channel's admission (pairing) before a subscriber
-   *  hears a message, which is what gives these ports rule R1. */
-  router: Pick<TalkRouter, "send" | "subscribe" | "feature">;
+  /** The channel's admission (pairing), run before a subscriber hears a
+   *  message, which is what gives these ports rule R1. Absent, every message
+   *  is admitted. */
+  admit?: Admission;
+  admission?: OrderedAdmissionOptions;
 }
 
 export interface ConnectionPorts {
@@ -40,7 +43,14 @@ export interface ConnectionPorts {
   directory: ChannelDirectory;
 }
 
-/** The ports a service's Talk backs, or null when the service has no Talk. */
+/**
+ * The ports a service's Talk backs, or null when the service has no Talk.
+ *
+ * Building the ports subscribes the inbound port to the service's Talks for
+ * the registry's lifetime, and admission runs once per message for each
+ * subscription. So build one set per registry and service, as `channelList`
+ * does: a second set would run admission (pairing replies included) twice.
+ */
 export function connectionPorts(
   deps: ConnectionPortsDeps,
   service: string,
@@ -68,7 +78,7 @@ function connectionDirectory(deps: ConnectionPortsDeps, service: string): Channe
         .filter((connection) => !connectionId || connection.id === connectionId);
       const listed = await Promise.all(
         connections.map(async (connection) => {
-          const directory = deps.router.feature(connection.id, "directory");
+          const directory = connection.talk?.directory;
           if (!directory) return [];
           try {
             const result = await directory.listConversations(input);
@@ -156,9 +166,10 @@ function connectionMessages(deps: ConnectionPortsDeps, service: string): Message
 
   return {
     async query({ conversationId, since, limit }) {
-      const connectionId = connectionIdFor(deps, service);
-      if (!connectionId) throw new ChannelNotConnected(service);
-      const history = deps.router.feature(connectionId, "history");
+      const connection = connectionFor(deps, service);
+      if (!connection) throw new ChannelNotConnected(service);
+      const connectionId = connection.id;
+      const history = connection.talk?.history;
       // A Connection whose Talk is not built yet (a credential missing or
       // degraded) backs nothing, the same as no Connection at all.
       if (!history) throw new ChannelNotConnected(service);
@@ -200,8 +211,9 @@ function copyOf(message: ChannelMessage): ChannelMessage {
   };
 }
 
-function connectionIdFor(deps: ConnectionPortsDeps, service: string): string | null {
-  return deps.registry.find(service)[0]?.id ?? null;
+/** The Connection that backs the channel now: the first of its service. */
+function connectionFor(deps: ConnectionPortsDeps, service: string): Connection | null {
+  return deps.registry.find(service)[0] ?? null;
 }
 
 function connectionSend(deps: ConnectionPortsDeps, service: string): ChannelSend {
@@ -212,19 +224,18 @@ function connectionSend(deps: ConnectionPortsDeps, service: string): ChannelSend
     conversationFor: () => Promise.reject(new ChannelNotConnected(service)),
   };
   return {
-    send(conversationId, message) {
-      const connectionId = connectionIdFor(deps, service);
-      if (!connectionId) return Promise.reject(new ChannelNotConnected(service));
-      return deps.router.send(connectionId, conversationId, message);
+    async send(conversationId, message) {
+      const connection = connectionFor(deps, service);
+      if (!connection) throw new ChannelNotConnected(service);
+      return requireTalk(connection).send(conversationId, message);
     },
     get direct() {
-      const connectionId = connectionIdFor(deps, service);
-      if (!connectionId) return unbacked;
-      return deps.router.feature(connectionId, "directMessaging");
+      const connection = connectionFor(deps, service);
+      if (!connection) return unbacked;
+      return connection.talk?.directMessaging ?? null;
     },
     get activity() {
-      const connectionId = connectionIdFor(deps, service);
-      return connectionId ? deps.router.feature(connectionId, "activity") : null;
+      return connectionFor(deps, service)?.talk?.activity ?? null;
     },
   };
 }
@@ -238,12 +249,13 @@ function connectionInbound(deps: ConnectionPortsDeps, service: string): ChannelI
   // One buffer set per subscription, so two subscriptions of one handler stay
   // two, and each subscription's conversations wait only on themselves (R4).
   const subscriptions = new Set<ConversationBuffers<InboundEvent>>();
-  // One router subscription per Connection, fanned out to every handler. The
-  // router re-attaches it across that Connection's epochs (R5).
+  // One Talk subscription per Connection, fanned out to every handler. A new
+  // epoch starts with no handlers, so each unlock subscribes again (R5).
   const attached = new Map<string, () => void>();
+  const admission = new OrderedAdmission(deps.admit, deps.admission);
 
   // Each subscription's buffer hears one conversation's events one at a time,
-  // in the order they are pushed here, which the router keeps as arrival
+  // in the order they are pushed here, which admission keeps as arrival
   // order (R4). A conversation is keyed by the Connection it arrived on as
   // well, so two Connections' conversations sharing an id never share a queue.
   // Nothing upstream waits on delivery, so dispatch returns once every event
@@ -265,21 +277,30 @@ function connectionInbound(deps: ConnectionPortsDeps, service: string): ChannelI
       for (const buffers of subscriptions) buffers.push(conversation, event);
     };
 
-  const attach = (connectionId: string): void => {
-    if (attached.has(connectionId)) return;
+  // Admission runs whether or not anyone subscribes yet: pairing answers a
+  // pairing code even before the inbox hears the channel.
+  const attach = (connection: Connection): void => {
+    attached.get(connection.id)?.();
+    attached.delete(connection.id);
     // A removed Connection's subscription goes when its successor attaches.
-    const live = new Set(deps.registry.find(service).map((connection) => connection.id));
+    const live = new Set(deps.registry.find(service).map((each) => each.id));
     for (const [id, detach] of attached) {
       if (live.has(id)) continue;
       detach();
       attached.delete(id);
     }
-    attached.set(connectionId, deps.router.subscribe(connectionId, dispatchFrom(connectionId)));
+    const talk = connection.talk;
+    if (!talk) return;
+    const dispatch = dispatchFrom(connection.id);
+    attached.set(
+      connection.id,
+      talk.subscribe((message) => admission.deliver(connection, message, dispatch)),
+    );
   };
 
-  // A Connection that unlocks after the first subscription still reaches it.
+  // Fires now for each Connection already unlocked, then at every unlock.
   deps.registry.onUnlocked("talk", (connection) => {
-    if (connection.service === service && subscriptions.size > 0) attach(connection.id);
+    if (connection.service === service) attach(connection);
   });
 
   return {
@@ -289,18 +310,13 @@ function connectionInbound(deps: ConnectionPortsDeps, service: string): ChannelI
         describe: (event) => ({ channel: service, messageId: event.message.messageId }),
       });
       subscriptions.add(subscription);
-      for (const connection of deps.registry.find(service)) attach(connection.id);
       return () => {
         subscriptions.delete(subscription);
         subscription.close();
-        if (subscriptions.size > 0) return;
-        for (const detach of attached.values()) detach();
-        attached.clear();
       };
     },
     get media() {
-      const connectionId = connectionIdFor(deps, service);
-      return connectionId ? deps.router.feature(connectionId, "inboundMedia") : null;
+      return connectionFor(deps, service)?.talk?.inboundMedia ?? null;
     },
   };
 }
