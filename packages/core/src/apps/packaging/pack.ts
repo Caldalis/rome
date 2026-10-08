@@ -287,6 +287,21 @@ const PNPM_OUTPUT_TAIL_CHARS = 4000;
 const PNPM_OUTPUT_DRAIN_MS = 250;
 
 /**
+ * Environment for a pnpm child. When ROME_PNPM_COREPACK_HOME is set (the
+ * production image sets it), corepack resolves pnpm from that cache, so every
+ * instance installs apps with the image's pnpm. COREPACK_DEFAULT_TO_LATEST=0
+ * stops an app that declares a newer same-major pnpm from promoting that
+ * version to the cache's default for every later install. Otherwise the child
+ * inherits this process's environment unchanged.
+ */
+function pnpmEnv(): NodeJS.ProcessEnv {
+  const pinned = process.env.ROME_PNPM_COREPACK_HOME;
+  return pinned
+    ? { ...process.env, COREPACK_HOME: pinned, COREPACK_DEFAULT_TO_LATEST: "0" }
+    : process.env;
+}
+
+/**
  * Run pnpm in `cwd`. Output still streams to this process's stdout and stderr.
  * On a non-zero exit or a timeout, the rejection's message ends with the tail
  * of pnpm's combined output, since pnpm prints its `ERR_PNPM_*` diagnostics to
@@ -306,6 +321,7 @@ export function runPnpm(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const child = spawn("pnpm", args, {
       cwd: options.cwd,
+      env: pnpmEnv(),
       stdio: ["inherit", "pipe", "pipe"],
       signal: controller.signal,
     });
