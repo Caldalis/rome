@@ -85,7 +85,11 @@ import {
 import type { AgentEvent, AgentPlan, AgentPlanStepStatus } from "../types.js";
 import { classifyCodexErrorInfo } from "./codex-error-info.js";
 import { codexTurnErrorMessage, isCodexUsageLimitError } from "./codex-usage-limit.js";
-import { isRomeCreditsExhaustedError, ROME_CREDITS_USED_UP_MESSAGE } from "./rome-credits-error.js";
+import {
+  isRomeCreditsExhaustedError,
+  isRomeCreditsModelNotServedError,
+  ROME_CREDITS_USED_UP_MESSAGE,
+} from "./rome-credits-error.js";
 import { codexToolItemIsError } from "./codex/tool-result-error.js";
 import type { FacadeToolResult } from "./mcp-facade.js";
 import { codexStop } from "./stop-reason.js";
@@ -362,6 +366,9 @@ interface ActiveTurn {
   errorCode: AgentErrorCode | null;
   /** HTTP status codex reported for the failed request, if any. */
   errorHttpStatus?: number;
+  /** Provider and cause, for clients that offer recovery (see `TurnErrorEvent`). */
+  errorProvider?: TurnErrorEvent["provider"];
+  errorReason?: TurnErrorEvent["reason"];
   /** `turn.status` from `turn/completed`, mapped to the terminal's `stop`. */
   nativeStatus: string | null;
   /** Last reasoning part each in-flight reasoning item streamed, by item id.
@@ -377,6 +384,8 @@ interface CodexAppServerProviderOptions {
   onQuotaExhausted?: () => void;
   /** Only the Rome credits payer may classify its 402 as exhausted credits. */
   isUsingRomeCredits?: () => boolean;
+  /** The Rome credits gateway refused a model it no longer serves. */
+  onRomeCreditsModelNotServed?: () => Promise<void> | void;
   /** Who pays for Codex now. AgentSession reads it when it sends each turn. */
   funding?: () => UsageFunding;
 }
@@ -385,13 +394,15 @@ interface CodexFailureClassification {
   code: AgentErrorCode | null;
   error?: string;
   httpStatus?: number;
+  provider?: TurnErrorEvent["provider"];
+  reason?: TurnErrorEvent["reason"];
   pending?: Promise<void>;
 }
 
 /** Terminal `error` block for a classified codex failure. */
 function codexErrorEvent(
   error: string,
-  classification: Pick<CodexFailureClassification, "code" | "httpStatus">,
+  classification: Pick<CodexFailureClassification, "code" | "httpStatus" | "provider" | "reason">,
   accounting?: TurnErrorEvent["accounting"],
 ): TurnErrorEvent {
   return {
@@ -399,6 +410,8 @@ function codexErrorEvent(
     error,
     ...(classification.code ? { code: classification.code } : {}),
     ...(classification.httpStatus !== undefined ? { httpStatus: classification.httpStatus } : {}),
+    ...(classification.provider ? { provider: classification.provider } : {}),
+    ...(classification.reason ? { reason: classification.reason } : {}),
     ...(accounting ? { accounting } : {}),
   };
 }
@@ -434,6 +447,19 @@ function classifyCodexFailure(
 ): CodexFailureClassification {
   if (options.isUsingRomeCredits?.() && isRomeCreditsExhaustedError(turnError)) {
     return { code: "credits_used_up", error: ROME_CREDITS_USED_UP_MESSAGE, httpStatus: 402 };
+  }
+  // The served list is stale. Re-read it before the terminal block, so a retry
+  // falls back or fails closed instead of choosing the same model again.
+  if (options.isUsingRomeCredits?.() && isRomeCreditsModelNotServedError(turnError)) {
+    const refreshed = options.onRomeCreditsModelNotServed?.();
+    return {
+      code: "model_unavailable",
+      httpStatus: 403,
+      // Matches the resolver's refusal, so clients show the same recovery.
+      provider: "openai",
+      reason: "model_access_denied",
+      ...(refreshed ? { pending: refreshed } : {}),
+    };
   }
   // The turn never started; a retry runs under the new payer.
   if (turnError instanceof PayerChangedError) {
@@ -834,6 +860,8 @@ export class CodexAppServerProvider implements ModelProvider {
                 classification.error ?? codexTurnErrorMessage(p.turn?.error, "codex turn failed");
               activeTurn.errorCode = classification.code;
               activeTurn.errorHttpStatus = classification.httpStatus;
+              activeTurn.errorProvider = classification.provider;
+              activeTurn.errorReason = classification.reason;
               if (classification.pending) activeTurn.pending.push(classification.pending);
             } else if (params.outputSchema && p.turn?.status !== "completed") {
               activeTurn.failed = true;
@@ -863,6 +891,8 @@ export class CodexAppServerProvider implements ModelProvider {
             activeTurn.errorMessage = message;
             activeTurn.errorCode = code;
             activeTurn.errorHttpStatus = classification.httpStatus;
+            activeTurn.errorProvider = classification.provider;
+            activeTurn.errorReason = classification.reason;
             if (classification.pending) activeTurn.pending.push(classification.pending);
             activeTurn.resolveDone();
           } else {
@@ -1080,7 +1110,12 @@ export class CodexAppServerProvider implements ModelProvider {
             runtime.sink.push(
               codexErrorEvent(
                 turn.errorMessage,
-                { code: turn.errorCode, httpStatus: turn.errorHttpStatus },
+                {
+                  code: turn.errorCode,
+                  httpStatus: turn.errorHttpStatus,
+                  provider: turn.errorProvider,
+                  reason: turn.errorReason,
+                },
                 failedTurnAccounting(turn),
               ),
             );
