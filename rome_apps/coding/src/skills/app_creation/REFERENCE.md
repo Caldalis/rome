@@ -664,7 +664,7 @@ authoritative reference):
 |---|---|---|---|
 | `name` | `string` | yes | Human-readable identifier; use for dedup. |
 | `trigger.type` | `"schedule" \| "event-bus"` | yes | Schedule or watched-event. |
-| `trigger.tzid` | string | schedule | IANA timezone (e.g. `"UTC"`, `"America/Los_Angeles"`). A `floating` schedule ignores it. |
+| `trigger.tzid` | string | schedule | IANA timezone (e.g. `"UTC"`, `"America/Los_Angeles"`). A `floating` schedule does not fire in it, but it must still be valid. |
 | `trigger.tzMode` | `"fixed" \| "floating"` | schedule | Picks the timezone for `localTime`. With `floating`, the routine fires in the guardian's current timezone and reschedules when that timezone changes. Use `floating` for most routines. With `fixed`, it fires in `tzid`, for a time tied to one place, such as a market open. `system:create_routine` stores a routine that has a `date` as `fixed`. |
 | `trigger.localTime` | `"HH:mm"` | schedule | Local wall-clock time in the timezone `tzMode` picks. |
 | `trigger.rrule` | string | recurring | iCal RRULE, e.g. `FREQ=DAILY`, `FREQ=WEEKLY;BYDAY=MO,WE,FR`. Mutually exclusive with `date`. `FREQ=MONTHLY` must pin `BYMONTHDAY=N`. |
