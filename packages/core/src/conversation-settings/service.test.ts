@@ -206,6 +206,26 @@ describe("ConversationSettingsService", () => {
     expect(changed).toHaveBeenCalledTimes(2);
   });
 
+  it("resolves an observed thread with no session row through its parent", async () => {
+    const { service, discord, parent } = await setup();
+    await service.update({
+      ref: parent,
+      set: { enabled: false },
+      clear: [],
+      actor: { kind: "guardian" },
+    });
+    const thread: ConversationRef = {
+      connectionId: discord.id,
+      conversationId: "new-thread" as ConversationId,
+    };
+    service.observe({ ref: thread, service: "discord", kind: "topic", displayName: "new", parent });
+
+    await expect(service.get(thread)).resolves.toMatchObject({
+      inheritedFrom: parent,
+      effective: { enabled: false },
+    });
+  });
+
   it("reconciles a first-seen topic placeholder with its persisted parent", async () => {
     const { service, discord, parent } = await setup();
     const child: ConversationRef = {
@@ -558,6 +578,7 @@ describe("ConversationSettingsService", () => {
       connections: registry,
       channels: channelsOver(registry),
       listAgents: () => [],
+      onChanged: () => {},
     });
 
     const first = await service.list({ limit: 2 });
@@ -610,6 +631,7 @@ describe("ConversationSettingsService", () => {
       connections: registry,
       channels: channelsOver(registry),
       listAgents: () => [],
+      onChanged: () => {},
     });
 
     const first = await service.list({ limit: 2 });
