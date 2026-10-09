@@ -17,12 +17,6 @@ export interface ScheduleTrigger {
   rrule?: string; // iCal RRULE — recurring; mutually exclusive with `date`
 }
 
-export interface WebhookTrigger {
-  type: "webhook";
-  path: string; // unique URL path segment
-  secret?: string;
-}
-
 /** One equality condition on an event's payload. `field` is a dot-path into the
  * payload object (e.g. "from.email"); the condition holds when the value at that
  * path, coerced with String(), equals `equals`. This is the narrowing a user
@@ -34,18 +28,11 @@ export interface EventFilterCondition {
 
 export interface EventBusTrigger {
   type: "event-bus";
-  eventName: string; // e.g., "action:completed", "message:received"
+  eventName: string; // e.g., "order.created", "provider:event:github.pull_request"
   sourcePattern?: string; // e.g., "deploy_*" to match action names
   /** Payload conditions, AND-ed together. Absent or empty means fire on every
    * event of this name — a legitimate "watch all" routine, so optional. */
   filter?: EventFilterCondition[];
-}
-
-export interface PollTrigger {
-  type: "poll";
-  source: string; // e.g., "gmail", "rss", "http"
-  interval: string; // RRULE or simple like "5m", "1h"
-  query?: Record<string, unknown>; // source-specific filter config
 }
 
 /** A routine with no automatic firing condition. Its only entry point is an
@@ -57,12 +44,7 @@ export interface ManualTrigger {
   type: "manual";
 }
 
-export type Trigger =
-  | ScheduleTrigger
-  | WebhookTrigger
-  | EventBusTrigger
-  | PollTrigger
-  | ManualTrigger;
+export type Trigger = ScheduleTrigger | EventBusTrigger | ManualTrigger;
 
 export type TriggerType = Trigger["type"];
 
@@ -88,7 +70,7 @@ export interface Routine {
 
   createdAt: Date;
   lastFiredAt?: Date;
-  nextRunAt?: Date; // meaningful for schedule/poll triggers only
+  nextRunAt?: Date; // meaningful for schedule triggers only
 }
 
 export type RoutineRunStatus = "success" | "error" | "running" | "pending_approval" | "cancelled";
@@ -119,13 +101,4 @@ export interface RoutineRun {
   firedAt: Date;
   durationMs?: number;
   error?: string;
-}
-
-export interface RoutineStats {
-  totalRuns: number;
-  successCount: number;
-  errorCount: number;
-  lastStatus: string | null;
-  lastFiredAt: Date | null;
-  avgDurationMs: number | null;
 }
