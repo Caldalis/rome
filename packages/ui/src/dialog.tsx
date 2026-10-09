@@ -3,6 +3,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "./cn.js";
 import { IconButton } from "./icon-button.js";
 import { AutoPortal } from "./portal.js";
+import { useShadowRootScroll } from "./shadow-scroll.js";
 
 type DialogSize = "sm" | "md" | "lg";
 
@@ -35,6 +36,7 @@ export function Dialog({
   className,
   ...rest
 }: DialogProps) {
+  const contentRef = useShadowRootScroll();
   return (
     <DialogPrimitive.Root
       open={open}
@@ -64,6 +66,7 @@ export function Dialog({
             className,
           )}
           {...rest}
+          ref={contentRef}
         >
           {children}
         </DialogPrimitive.Content>
