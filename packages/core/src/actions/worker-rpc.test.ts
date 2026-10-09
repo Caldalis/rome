@@ -86,6 +86,7 @@ function makeServer(
     feedback?: { send: ReturnType<typeof rs.fn> };
     channelsService?: unknown;
     connectionRegistry?: unknown;
+    agentNames?: unknown;
   } = {},
 ) {
   const eventBus = overrides.eventBus ?? new EventBus();
@@ -119,6 +120,7 @@ function makeServer(
     feedback: overrides.feedback ?? { send: rs.fn() },
     channelsService: overrides.channelsService,
     connectionRegistry: overrides.connectionRegistry,
+    agentNames: overrides.agentNames,
   } as unknown as WorkerRpcServices;
   return {
     server: new WorkerRpcServer(services),
@@ -307,6 +309,23 @@ describe("WorkerRpcServer param validation", () => {
 
       expect(response.error).toMatch(/channels\.query: invalid params/);
       expect(query).not.toHaveBeenCalled();
+    });
+
+    it("resolves an agent's name, refusing anything but a name", async () => {
+      const resolve = rs.fn(async () => ({ status: "none" }));
+      const { server } = makeServer({ agentNames: { resolve } });
+      const fake = makeFakeWorker();
+      server.attach(fake.worker);
+
+      const found = await rpc(fake, "agentNames.resolve", { name: "atlas" });
+      const empty = await rpc(fake, "agentNames.resolve", { name: "" });
+      const stray = await rpc(fake, "agentNames.resolve", { name: "atlas", channel: "whatsapp" });
+
+      expect(found.result).toEqual({ status: "none" });
+      expect(resolve).toHaveBeenCalledWith("atlas");
+      expect(empty.error).toMatch(/agentNames\.resolve: invalid params/);
+      expect(stray.error).toMatch(/agentNames\.resolve: invalid params/);
+      expect(resolve).toHaveBeenCalledTimes(1);
     });
   });
 

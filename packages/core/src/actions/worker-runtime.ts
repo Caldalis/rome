@@ -28,6 +28,7 @@ import {
   EventBusProxy,
   EventCatalogProxy,
   NotifyServiceProxy,
+  AgentNamesProxy,
   FeedbackServiceProxy,
   RoutineEngineProxy,
   SystemUpgradeServiceProxy,
@@ -192,6 +193,7 @@ export async function createWorkerActionEngine(): Promise<ActionEngine> {
         enabled: config.hostExecutionEnabled,
       }),
       feedback: new FeedbackServiceProxy(),
+      agentNames: new AgentNamesProxy(),
     },
   );
   if (agentLoader.getRegistryLoadFailures().length > 0) {

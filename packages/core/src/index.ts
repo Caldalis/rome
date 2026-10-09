@@ -77,10 +77,11 @@ import { WhatsAppStoreRepository } from "./db/repositories/whatsapp-store.js";
 import { LinkedInAccounts } from "./channels/linkedin-accounts.js";
 import { WhatsAppAccounts } from "./channels/whatsapp-accounts.js";
 import { createAccountNames } from "./channels/account-names.js";
-import { agentsAccounts } from "./channels/agents-accounts.js";
+import { agentsAccounts, externalAgents } from "./channels/agents-accounts.js";
 import { channelList } from "./channels/channel-list.js";
 import { sendApprovalCard } from "./actions/approval-card.js";
 import { backingConnection, createChannelsService } from "./channels/channels-service.js";
+import { createAgentNames } from "./channels/agent-names.js";
 import { WechatUserReader, WechatUserRuntime } from "./channels/wechat-user.js";
 import { WechatApp } from "./desktop-apps/wechat-app.js";
 import { SentinelLogRepository } from "./db/repositories/sentinel-log.js";
@@ -355,6 +356,14 @@ async function main() {
     channels: () => builtChannels,
     registry: connectionRegistry,
   });
+  // The agents this Rome can message, one read for the People page and for
+  // sending by name.
+  const listedAgents = externalAgents({
+    client: createRomeCloudAgentsClient(),
+    isConnected: () =>
+      connectionRegistry.find(AGENTS_SERVICE).some((conn) => conn.isUnlocked("talk")),
+  });
+  const agentNameResolver = createAgentNames(listedAgents);
   // Conferral setups: in-memory session store keyed per grant,
   // sharing the registry (descriptor lookup + terminal write) and the person
   // mapping repo (guardian-link auto-mapping). Drives the generic setup
@@ -924,6 +933,7 @@ async function main() {
       favorService,
       hostExecution,
       feedback: feedbackClient,
+      agentNames: agentNameResolver,
     },
   );
 
@@ -936,6 +946,7 @@ async function main() {
       favorService,
       hostExecution,
       feedback: feedbackClient,
+      agentNames: agentNameResolver,
     }),
   );
   appCatalog.subscribe(async function favorActionRequirementsSubscriber(event) {
@@ -1140,11 +1151,7 @@ async function main() {
     ...(wechatUserReader ? { wechatUserReader } : {}),
     connections: { registry: connectionRegistry, admit },
     connectionAccounts: {
-      [AGENTS_SERVICE]: agentsAccounts({
-        client: createRomeCloudAgentsClient(),
-        isConnected: () =>
-          connectionRegistry.find(AGENTS_SERVICE).some((conn) => conn.isUnlocked("talk")),
-      }),
+      [AGENTS_SERVICE]: agentsAccounts(listedAgents),
     },
   });
   builtChannels = channels;
@@ -1286,6 +1293,7 @@ async function main() {
     backendTurnRunner,
     notify: notifyClient,
     feedback: feedbackClient,
+    agentNames: agentNameResolver,
   });
   actionEngine.setWorkerRpcServer(workerRpcServer);
   actionEngine.startWorkerWarmPool();
