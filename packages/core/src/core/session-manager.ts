@@ -113,7 +113,3 @@ export class SessionManager {
     }
   }
 }
-
-export function getChannelFromThreadKey(channelThreadKey: string): string {
-  return channelThreadKey.split(":", 1)[0] ?? "";
-}

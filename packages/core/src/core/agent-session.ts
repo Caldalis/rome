@@ -13,7 +13,6 @@ import type { AgentLoader } from "./agent-loader.js";
 import type { AppCatalog } from "../apps/catalog.js";
 import type { SessionManager } from "./session-manager.js";
 import type { SessionsRepository } from "../db/repositories/sessions.js";
-import { getChannelFromThreadKey } from "./session-manager.js";
 import { findRecordedConversation, type RecordedConversation } from "./agent-trace-recorder.js";
 import {
   buildInteractiveSurfaceGuidanceSection,
@@ -120,7 +119,11 @@ import type {
 } from "../db/repositories/webchat.js";
 import { KeyedMutex } from "../lib/keyed-mutex.js";
 import { evaluateProviderSessionReset } from "../conversation-settings/reset-policy.js";
-import { forkSessionKey } from "./agent-session-key.js";
+import {
+  forkSessionKey,
+  sessionKeyChannel,
+  webchatConversationOfKey,
+} from "./agent-session-key.js";
 
 const log = createLogger("agent-session");
 
@@ -984,9 +987,7 @@ async function openSession(
   // model that actually ran), so it only applies to unpinned (legacy) resumes.
   // Only the chat's own session, keyed `webchat:<conversation id>`, reads it.
   // Subagent keys carry a suffix, and app sessions use keys of their own.
-  const [keyService, keyThread, ...keyRest] = key.channelThreadKey.split(":");
-  const conversationId =
-    keyService === "webchat" && keyThread && keyRest.length === 0 ? keyThread : undefined;
+  const conversationId = webchatConversationOfKey(key.channelThreadKey);
   const persistedSelection =
     init.resumeSessionId && !sessionPin && !init.selectionId && conversationId
       ? resolveWebchatLargeModelSelection(
@@ -1063,7 +1064,7 @@ async function openSession(
   // below. The answer feeds the cached system prompt, so the opening caller's
   // channel decides it for the session's life. An opener without a thread
   // context falls back to the channel the key names.
-  const keyChannel = getChannelFromThreadKey(key.channelThreadKey) || undefined;
+  const keyChannel = sessionKeyChannel(key.channelThreadKey);
   const openingChannel = init.threadContext?.channel ?? keyChannel;
   if (keyChannel && openingChannel !== keyChannel && deps.channelSurface(keyChannel) !== null) {
     log.warn("session opener's channel differs from the channel its key names", {
@@ -3315,7 +3316,7 @@ class AgentSessionImpl implements AgentSession {
     // case); when invoked inside one (channel adapter path), that span
     // becomes the parent.
     const channelName = this.key.channelThreadKey
-      ? getChannelFromThreadKey(this.key.channelThreadKey) || undefined
+      ? sessionKeyChannel(this.key.channelThreadKey)
       : undefined;
 
     // Identifying attrs stamped on every span this turn creates. We pass
