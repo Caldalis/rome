@@ -84,6 +84,70 @@ describe("AIToolState", () => {
     expect(state.get().codex.quotaExhausted).toBe(false);
   });
 
+  it.each([
+    "anthropic",
+    "openai",
+  ] as const)("replaces stale %s usage on failed probes without clearing a quota signal", async (provider) => {
+    const exhausted = {
+      checkedAt: "2026-09-27T17:12:35.031Z",
+      source: "test",
+      sevenDay: { usedPercent: 100, resetsAt: "2099-01-01T04:59:59.955Z" },
+    };
+    const failed = {
+      checkedAt: "2026-09-28T17:00:00.000Z",
+      source: "test",
+      error: "Claude usage request failed with HTTP 429",
+    };
+    const usageProbe = rs.fn<AIToolStateProbes["claudeUsage"]>();
+    usageProbe.mockResolvedValueOnce(exhausted);
+    usageProbe.mockResolvedValueOnce(failed);
+    usageProbe.mockResolvedValueOnce(null);
+    usageProbe.mockRejectedValueOnce(new Error("usage timed out"));
+    usageProbe.mockResolvedValueOnce({ ...failed, sevenDay: exhausted.sevenDay });
+    usageProbe.mockResolvedValueOnce({
+      checkedAt: "2026-09-28T17:05:00.000Z",
+      source: "test",
+      sevenDay: { usedPercent: 2, resetsAt: "2099-01-08T04:59:59.955Z" },
+    });
+    const state = createAIToolState({
+      probes: probes({
+        [provider === "anthropic" ? "claudeUsage" : "codexUsage"]: usageProbe,
+      }),
+      startRefresh: false,
+      refreshIntervalMs: null,
+    });
+    const current = () => state.get()[provider === "anthropic" ? "claude" : "codex"];
+    try {
+      await state.refresh(provider);
+      expect(current().usage?.sevenDay?.usedPercent).toBe(100);
+      expect(current().quotaExhausted).toBe(true);
+
+      await state.refresh(provider);
+      expect(current().usage).toEqual(failed);
+      expect(current().quotaExhausted).toBe(true);
+
+      // No usage source is not a failure: no bars and no error.
+      await state.refresh(provider);
+      expect(current().usage).toBeUndefined();
+      expect(current().quotaExhausted).toBe(true);
+
+      await state.refresh(provider);
+      expect(current().usage?.error).toBe("usage timed out");
+      expect(current().quotaExhausted).toBe(true);
+
+      await state.refresh(provider);
+      expect(current().usage).toEqual(failed);
+      expect(current().quotaExhausted).toBe(true);
+
+      await state.refresh(provider);
+      expect(current().usage?.error).toBeUndefined();
+      expect(current().usage?.sevenDay?.usedPercent).toBe(2);
+      expect(current().quotaExhausted).toBe(false);
+    } finally {
+      state.close();
+    }
+  });
+
   it("notifies only when the Codex login changes", async () => {
     let loggedIn = true;
     const onCodexLoginChanged = rs.fn();
