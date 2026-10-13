@@ -147,9 +147,11 @@ export interface ModelSessionParams {
   workingDir?: string;
   externalMcpServers?: Record<string, McpServerConfig>;
   /**
-   * The session identifier; `isNewSession` selects whether the provider
-   * treats it as fresh or as a resumed session. (Resume vs. new is a generic
-   * streaming-provider concept — not Anthropic-specific.)
+   * The session identifier, a bare UUID. The Anthropic provider passes a new
+   * session's id to Claude Code as `--session-id`, which rejects anything
+   * else. `isNewSession` selects whether the provider treats it as fresh or
+   * as a resumed session. (Resume vs. new is a generic streaming-provider
+   * concept — not Anthropic-specific.)
    */
   sessionId: string;
   /** When true, treat `sessionId` as a fresh id; otherwise resume it. */
