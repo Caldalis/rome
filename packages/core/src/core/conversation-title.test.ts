@@ -53,6 +53,9 @@ describe("conversation title generation", () => {
       builtinTools: [],
       maxTurns: 1,
       reasoningEffort: "low",
+      sessionId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      ),
       isNewSession: true,
     });
     expect(openParams?.getActionCatalog()).toEqual([]);

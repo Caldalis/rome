@@ -77,7 +77,7 @@ export function createConversationTitleGenerator(
           builtinTools: [],
           maxTurns: 1,
           reasoningEffort: "low",
-          sessionId: `conversation-title:${randomUUID()}`,
+          sessionId: randomUUID(),
           isNewSession: true,
           executeAction: async () => {
             throw new Error("Conversation title generation cannot execute actions");
