@@ -25,7 +25,13 @@ import {
   webchatWorkspaceLayouts,
 } from "../schema.js";
 import type { DrizzleDb } from "../index.js";
-import { isWebchatChat, romeSessionKind, withSessionKind } from "../session-kind.js";
+import {
+  channelConversationId,
+  isWebchatChat,
+  romeSessionKind,
+  storedSessionType,
+  withSessionKind,
+} from "../session-kind.js";
 import { DEFAULT_WEBCHAT_PROJECT_NAME } from "../../webchat/constants.js";
 import type { TurnFeedbackRating } from "@rome/api-types/trace-segments";
 import type { RomeSessionType } from "@rome-os/app-runtime";
@@ -356,9 +362,7 @@ const SEARCH_MESSAGE_SCAN_LIMIT = 400;
 const SEARCH_SNIPPET_CONTEXT = 40;
 const SEARCH_SNIPPET_LENGTH = 160;
 
-export function channelConversationId(channel: string, threadId: string): string {
-  return `channel:${channel}:${threadId}`;
-}
+export { channelConversationId };
 
 /** The row id a recorded outbound message takes when the provider named it.
  *  Derived rather than random so a caller that knows the provider's id can
@@ -898,7 +902,7 @@ export class WebChatRepository {
       projectPath,
       largeModelSelection: largeModelSelection ?? null,
       agentName,
-      type,
+      type: storedSessionType(type),
       sourceChannel: "webchat",
       sourceThreadId: id,
       sourceThreadName: name,
@@ -912,6 +916,10 @@ export class WebChatRepository {
 
   async ensureRomeSession(input: EnsureRomeSessionInput): Promise<void> {
     const now = new Date();
+    // A chat is a channel row on the webchat channel, at its own address,
+    // whichever of the two types the caller names it by.
+    const chat =
+      input.type === "webchat" || (input.type === "channel" && input.sourceChannel === "webchat");
     await this.db
       .insert(romeSessions)
       .values({
@@ -923,9 +931,9 @@ export class WebChatRepository {
         projectPath: input.projectPath ?? null,
         largeModelSelection: null,
         agentName: input.agentName,
-        type: input.type,
-        sourceChannel: input.sourceChannel ?? null,
-        sourceThreadId: input.sourceThreadId ?? null,
+        type: storedSessionType(input.type),
+        sourceChannel: chat ? "webchat" : (input.sourceChannel ?? null),
+        sourceThreadId: chat ? input.id : (input.sourceThreadId ?? null),
         sourceThreadName: input.sourceThreadName ?? null,
         sourceThreadType: input.sourceThreadType ?? null,
         triggerKind: input.trigger?.triggerKind ?? null,
@@ -939,7 +947,7 @@ export class WebChatRepository {
         handoffSpec: null,
         createdAt: now,
         activityAt: now,
-        lastSeenActivityAt: input.type === "webchat" ? now : null,
+        lastSeenActivityAt: chat ? now : null,
       })
       .onConflictDoNothing({ target: romeSessions.id });
   }
@@ -978,6 +986,11 @@ export class WebChatRepository {
         .set({ parentSessionId: parent.id, agentName: parent.agentName })
         .where(eq(romeSessions.id, existing.id));
       return { ...existing, agentName: parent.agentName };
+    }
+    // Only the dashboard opens a chat, through `createSession`. A webchat
+    // address that names no chat is a deleted chat or a handoff, not a new one.
+    if (input.channel === "webchat") {
+      throw new Error(`No chat at webchat address ${input.threadId}`);
     }
 
     const id = channelConversationId(input.channel, input.threadId);
@@ -1384,7 +1397,7 @@ export class WebChatRepository {
       .from(romeSessions)
       .where(
         and(
-          inArray(romeSessions.type, ["webchat", "webchat_handoff", "channel"]),
+          inArray(romeSessions.type, ["webchat_handoff", "channel"]),
           eq(romeSessions.sourceChannel, channel),
           eq(romeSessions.sourceThreadId, threadId),
         ),
@@ -1690,15 +1703,19 @@ export class WebChatRepository {
   /**
    * A branch whose first answer completed on its own provider thread stops
    * being special: it becomes an ordinary chat, listed and managed like any
-   * other. Provenance columns are left in place — only the type and the
-   * unread clock change. Guarded on the current type so a double call, or a
-   * call racing a delete, is a no-op.
+   * other. It takes its own address in place of the parent's it copied, and
+   * the unread clock starts; lineage stays in `parent_session_id` and the
+   * trigger columns. Guarded on the current type so a double call, or a call
+   * racing a delete, is a no-op.
    */
   async promoteForkToChat(id: string): Promise<void> {
     await this.db
       .update(romeSessions)
       .set({
-        type: "webchat",
+        type: storedSessionType("webchat"),
+        // A fork carries its parent's address. As a chat it answers at its own.
+        sourceChannel: "webchat",
+        sourceThreadId: sql`${romeSessions.id}`,
         lastSeenActivityAt: sql`${romeSessions.activityAt}`,
       })
       .where(and(eq(romeSessions.id, id), eq(romeSessions.type, "fork")));

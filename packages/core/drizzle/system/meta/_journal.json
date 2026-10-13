@@ -540,6 +540,13 @@
       "when": 1791854550298,
       "tag": "0077_webchat_person_ownership",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "6",
+      "when": 1791865125442,
+      "tag": "0078_webchat_chats_as_channel_rows",
+      "breakpoints": true
     }
   ]
 }
