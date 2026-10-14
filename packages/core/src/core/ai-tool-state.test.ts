@@ -437,16 +437,25 @@ describe("AIToolState", () => {
           sevenDay: { remainingPercent: 0 },
         },
       ],
-    ])("keeps blocking after the window has %s", async (_case, windows) => {
+    ])("blocks for one window after the window has %s, and longer while probes confirm it", async (_case, windows) => {
       rs.useFakeTimers({ shouldAdvanceTime: false });
       rs.setSystemTime(now);
       try {
-        const { state } = exhaustedState(windows);
+        const { state, claudeUsage } = exhaustedState(windows);
         await state.refresh("anthropic");
         expect(state.get().claude.quotaExhausted).toBe(true);
 
-        rs.setSystemTime(now + 365 * 24 * HOUR);
+        // A later probe that confirms the exhaustion pushes the end out.
+        rs.setSystemTime(now + 4 * HOUR);
+        await state.refresh("anthropic");
+        rs.setSystemTime(now + 9 * HOUR - 1);
         expect(state.get().claude.quotaExhausted).toBe(true);
+
+        // A probe with unknown usage, such as an expired CLI token, does not.
+        claudeUsage.mockResolvedValueOnce(null);
+        await state.refresh("anthropic");
+        rs.setSystemTime(now + 9 * HOUR);
+        expect(state.get().claude.quotaExhausted).toBe(false);
       } finally {
         rs.useRealTimers();
       }
@@ -527,7 +536,7 @@ describe("AIToolState", () => {
       }
     });
 
-    it("keeps holding when an older probe settles with an exhausted window and no reset", async () => {
+    it("caps a replayed failure over an exhausted window with no reset at one window", async () => {
       rs.useFakeTimers({ shouldAdvanceTime: false });
       rs.setSystemTime(now);
       try {
@@ -552,14 +561,17 @@ describe("AIToolState", () => {
         releaseUsage();
         await olderRefresh;
 
-        rs.setSystemTime(now + HOUR);
+        rs.setSystemTime(now + 5 * HOUR - 1);
         expect(state.get().claude.quotaExhausted).toBe(true);
+
+        rs.setSystemTime(now + 5 * HOUR);
+        expect(state.get().claude.quotaExhausted).toBe(false);
       } finally {
         rs.useRealTimers();
       }
     });
 
-    it("lets a runtime quota failure after the usage reset outlast it", async () => {
+    it("lets a runtime quota failure after the usage reset outlast it for one window", async () => {
       rs.useFakeTimers({ shouldAdvanceTime: false });
       rs.setSystemTime(now);
       try {
@@ -570,8 +582,35 @@ describe("AIToolState", () => {
         rs.setSystemTime(now + HOUR);
         state.markQuotaExhausted("anthropic");
 
-        rs.setSystemTime(now + 365 * 24 * HOUR);
+        rs.setSystemTime(now + 6 * HOUR - 1);
         expect(state.get().claude.quotaExhausted).toBe(true);
+
+        rs.setSystemTime(now + 6 * HOUR);
+        expect(state.get().claude.quotaExhausted).toBe(false);
+      } finally {
+        rs.useRealTimers();
+      }
+    });
+
+    it("ends a runtime quota failure with no reset after one window while probes fail", async () => {
+      rs.useFakeTimers({ shouldAdvanceTime: false });
+      rs.setSystemTime(now);
+      try {
+        // An expired CLI token: every probe reports unknown usage.
+        const claudeUsage = rs.fn<AIToolStateProbes["claudeUsage"]>(async () => null);
+        const state = createAIToolState({
+          probes: probes({ claudeUsage }),
+          startRefresh: false,
+          refreshIntervalMs: null,
+        });
+        state.markQuotaExhausted("anthropic");
+
+        rs.setSystemTime(now + 5 * HOUR - 1);
+        await state.refresh("anthropic");
+        expect(state.get().claude.quotaExhausted).toBe(true);
+
+        rs.setSystemTime(now + 5 * HOUR);
+        expect(state.get().claude.quotaExhausted).toBe(false);
       } finally {
         rs.useRealTimers();
       }
