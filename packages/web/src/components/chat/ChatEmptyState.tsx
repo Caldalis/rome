@@ -3,6 +3,7 @@ import { MessageSquare, Pin, X } from "lucide-react";
 import { HorizontalScrollRail } from "@/components/chat/HorizontalScrollRail";
 import { QuickEntryGrid } from "@/components/chat/QuickEntryGrid";
 import { RomeLogo } from "@/components/logo";
+import { cn } from "@/lib/utils";
 import type { ResolvedRomeNewsItem } from "@rome-os/rome-web-components/news-item/schema";
 
 export interface PinnedChatSummary {
@@ -18,6 +19,11 @@ export interface ChatEmptyStateProps {
   onOpenPinnedChat: (id: string) => void;
   onUnpinChat: (id: string) => void;
   onActivateQuickEntry: (entry: ResolvedRomeNewsItem) => void;
+  /**
+   * From `md` up, sit at the bottom of the area so the greeting hugs the
+   * composer, which Chat centers with it (see `centerDraftComposer`).
+   */
+  hugComposer?: boolean;
 }
 
 /**
@@ -31,6 +37,7 @@ export function ChatEmptyState({
   onOpenPinnedChat,
   onUnpinChat,
   onActivateQuickEntry,
+  hugComposer = false,
 }: ChatEmptyStateProps) {
   const { t } = useTranslation("chat");
   const firstName = guardianName.trim().split(/\s+/)[0];
@@ -39,7 +46,12 @@ export function ChatEmptyState({
     : t("empty.greetingFallback");
 
   return (
-    <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col justify-center px-6 py-12">
+    <main
+      className={cn(
+        "mx-auto flex w-full max-w-5xl flex-1 flex-col justify-center px-6 py-12",
+        hugComposer && "md:flex-auto md:justify-end md:pb-8 md:pt-0",
+      )}
+    >
       <header className="max-w-3xl">
         <RomeLogo
           className="rome-empty-rise h-9 w-9 text-foreground"
