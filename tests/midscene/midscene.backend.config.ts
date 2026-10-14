@@ -11,8 +11,9 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 
 // Backend suite: the same Midscene cases format, run against a real Rome
 // container started from the production image. Cases share one instance and
-// run in file order, because the first case creates the account the later
-// cases sign in with.
+// run in path order, because the first case creates the account the later
+// cases sign in with. Each case file is named for what it tests, with a
+// numeric prefix that fixes that order: 01-onboarding.yaml, 02-....
 
 const here = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: process.env.ROME_E2E_ENV_FILE ?? resolve(here, ".env") });
@@ -69,7 +70,7 @@ const setup = defineProjectSetup<BackendContext>({
 
 const openInput = z.strictObject({
   path: z.string().min(1),
-  // 'guardian' signs in with the account BE-01 created before the page loads.
+  // 'guardian' signs in with the account ONBOARD-01 created before the page loads.
   session: z.enum(["none", "guardian"]).default("guardian"),
   // 'onboard' waits for the account form, 'shell' for the signed-in sidebar.
   waitUntil: z.enum(["onboard", "shell", "any"]).default("shell"),
@@ -217,7 +218,7 @@ export default defineTestProject<BackendContext>({
   test: { maxConcurrency: 1, testTimeout: 15 * 60_000, bail: 1 },
   projects: [
     {
-      name: "backend",
+      name: "web-backend",
       retry: process.env.MIDSCENE_RETRY ? Number(process.env.MIDSCENE_RETRY) : 0,
       setup,
       files: { include: ["backend/cases/**/*.{yaml,yml}"] },
