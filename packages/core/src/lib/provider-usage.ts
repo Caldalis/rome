@@ -14,7 +14,6 @@ import { createLogger } from "../logger.js";
 
 const log = createLogger("provider-usage");
 
-const CLAUDE_CREDENTIALS_PATH = join(homedir(), ".claude", ".credentials.json");
 const CLAUDE_USAGE_TIMEOUT_MS = 10_000;
 
 export interface UsageWindowStatus {
@@ -283,13 +282,44 @@ function claudeReportsNoUsageWindows(payload: unknown): boolean {
   );
 }
 
+// The margin covers a fast host clock and a token that expires while the
+// request is in flight.
+const CLAUDE_TOKEN_EXPIRY_MARGIN_MS = 60_000;
+// The CLI writes expiresAt in epoch milliseconds. A smaller number is another
+// unit, so the check treats it as unknown and sends the request.
+const MIN_EPOCH_MS = 1e12;
+
+function claudeTokenExpired(expiresAt: unknown, now: number): boolean {
+  return (
+    typeof expiresAt === "number" &&
+    Number.isFinite(expiresAt) &&
+    expiresAt >= MIN_EPOCH_MS &&
+    expiresAt <= now + CLAUDE_TOKEN_EXPIRY_MARGIN_MS
+  );
+}
+
+// Anthropic error bodies pair a fixed `error.type`, such as
+// `authentication_error`, with a free-text message. Only the type is safe to log.
+async function readErrorType(res: Response): Promise<string | undefined> {
+  try {
+    const body = JSON.parse(await res.text()) as { error?: { type?: unknown } } | null;
+    const type = body?.error?.type;
+    return typeof type === "string" && /^[a-z_]{1,64}$/.test(type) ? type : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Live Claude usage via the OAuth `/api/oauth/usage` endpoint, using the token
- * from `CLAUDE_CODE_OAUTH_TOKEN` or `~/.claude/.credentials.json`. Returns null
- * when no token is available; otherwise a status (possibly carrying `error` on a
- * failed/timed-out request). A status with neither `error` nor a window means
- * the endpoint reported no usage windows. This is the only reliable Claude
- * usage source — nothing persists `~/.claude/{rate,usage}-limits.json` locally.
+ * from `CLAUDE_CODE_OAUTH_TOKEN` or `~/.claude/.credentials.json`. Returns
+ * null when no token is available. Also returns null, without a request, when
+ * the file's token is at or within a minute of its `expiresAt`: only the Claude
+ * CLI renews that token, on its next turn, so usage is unknown until then.
+ * Otherwise returns a status, possibly carrying `error` on a failed or
+ * timed-out request. A status with neither `error` nor a window means the
+ * endpoint reported no usage windows. This is the only reliable Claude usage
+ * source, because nothing persists `~/.claude/{rate,usage}-limits.json` locally.
  */
 export async function readClaudeOAuthUsage(
   timeoutMs: number = CLAUDE_USAGE_TIMEOUT_MS,
@@ -300,9 +330,15 @@ export async function readClaudeOAuthUsage(
       : undefined;
   if (!accessToken) {
     try {
-      const raw = await fs.readFile(CLAUDE_CREDENTIALS_PATH, "utf8");
-      const parsed = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: unknown } };
+      const raw = await fs.readFile(join(homedir(), ".claude", ".credentials.json"), "utf8");
+      const parsed = JSON.parse(raw) as {
+        claudeAiOauth?: { accessToken?: unknown; expiresAt?: unknown };
+      };
       if (typeof parsed.claudeAiOauth?.accessToken === "string") {
+        if (claudeTokenExpired(parsed.claudeAiOauth.expiresAt, Date.now())) {
+          log.debug("Claude usage check skipped because the CLI token has expired");
+          return null;
+        }
         accessToken = parsed.claudeAiOauth.accessToken;
       }
     } catch {
@@ -330,6 +366,7 @@ export async function readClaudeOAuthUsage(
       log.error("Claude usage request failed", {
         status: res.status,
         retryAfter: res.headers.get("retry-after") ?? undefined,
+        errorType: await readErrorType(res),
       });
       return {
         checkedAt: new Date().toISOString(),
