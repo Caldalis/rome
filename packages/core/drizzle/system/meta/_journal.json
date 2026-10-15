@@ -547,6 +547,13 @@
       "when": 1791865125442,
       "tag": "0078_webchat_chats_as_channel_rows",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "6",
+      "when": 1791865185442,
+      "tag": "0079_several_connections_per_service",
+      "breakpoints": true
     }
   ]
 }

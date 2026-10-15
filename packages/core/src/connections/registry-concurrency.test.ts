@@ -160,8 +160,7 @@ describe("per-grant lock: independent grants do not serialize", () => {
   });
 
   // Acceptance: mutations on DIFFERENT Services/connections do not serialize —
-  // each ConnectionImpl owns its own per-grant chains. (The v1 registry permits
-  // exactly one connection per Service.)
+  // each ConnectionImpl owns its own per-grant chains.
   it("a parked conferral on one connection does not block another connection's conferral", async () => {
     const fx = makePasteTalk();
     // Gate only connection A's authorize write.

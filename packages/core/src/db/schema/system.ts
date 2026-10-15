@@ -865,18 +865,15 @@ export const executionJournal = sqliteTable(
   ],
 );
 
-// One row per minted Connection. The many-to-many grant ledger lives in
-// `connection_grants` below, keyed by custody (the connectionId).
-export const connections = sqliteTable(
-  "connections",
-  {
-    id: text("id").primaryKey(),
-    service: text("service").notNull(),
-    label: text("label").notNull(),
-    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
-  },
-  (table) => [uniqueIndex("connections_service_unique").on(table.service)],
-);
+// One row per minted Connection. A Service may hold several. The many-to-many
+// grant ledger lives in `connection_grants` below, keyed by custody (the
+// connectionId).
+export const connections = sqliteTable("connections", {
+  id: text("id").primaryKey(),
+  service: text("service").notNull(),
+  label: text("label").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+});
 
 // The grant ledger. Rows record outcomes only — never step/flow state
 // or scheme-specific columns. `credential` is a PersistedCredential envelope

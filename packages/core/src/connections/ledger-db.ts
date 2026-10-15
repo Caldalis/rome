@@ -6,10 +6,9 @@
 // (encryption was deliberately dropped). The envelope shape is kept so
 // encryption can return later. The runtime never reads inside `material`.
 
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { DrizzleDb, DrizzleTx, SqliteExec } from "../db/index.js";
 import { connectionGrants, connections } from "../db/schema/system.js";
-import { ServiceConnectionWriteConflict } from "./errors.js";
 import type { ConnectionId, GrantName, ProfileRecord } from "./types.js";
 import type {
   ConnectionRecord,
@@ -20,17 +19,6 @@ import type {
 } from "./ledger.js";
 
 type GrantRow = typeof connectionGrants.$inferSelect;
-
-function isServiceUniqueConstraint(error: unknown): boolean {
-  const dbError = error as { code?: unknown; constraint?: unknown; message?: unknown };
-  if (dbError.code === "23505") return dbError.constraint === "connections_service_unique";
-  return (
-    typeof dbError.code === "string" &&
-    dbError.code.startsWith("SQLITE_CONSTRAINT") &&
-    typeof dbError.message === "string" &&
-    dbError.message.includes("UNIQUE constraint failed: connections.service")
-  );
-}
 
 /** Revive a JSON-decoded PersistedCredential. The `credential` column is stored
  *  as plain JSON, so `expiresAt` comes back as an ISO string (or "never") rather
@@ -67,22 +55,15 @@ export class DrizzleGrantLedger implements GrantLedger {
   }
 
   writeConnection(exec: SqliteExec, rec: ConnectionRecord): void {
-    try {
-      exec
-        .insert(connections)
-        .values({
-          id: rec.id,
-          service: rec.service,
-          label: rec.label,
-          createdAt: rec.createdAt,
-        })
-        .run();
-    } catch (error) {
-      if (isServiceUniqueConstraint(error)) {
-        throw new ServiceConnectionWriteConflict(rec.service, error);
-      }
-      throw error;
-    }
+    exec
+      .insert(connections)
+      .values({
+        id: rec.id,
+        service: rec.service,
+        label: rec.label,
+        createdAt: rec.createdAt,
+      })
+      .run();
   }
 
   async createConnection(rec: ConnectionRecord): Promise<void> {
@@ -90,7 +71,13 @@ export class DrizzleGrantLedger implements GrantLedger {
   }
 
   async listConnections(): Promise<ConnectionRecord[]> {
-    const rows = await this.db.select().from(connections);
+    // Oldest first: a Service's first Connection is the one that backs its
+    // first channel, and readers of `find(service)[0]` rely on that.
+    // `created_at` holds whole seconds, so rowid (write order) breaks a tie.
+    const rows = await this.db
+      .select()
+      .from(connections)
+      .orderBy(asc(connections.createdAt), asc(sql`rowid`));
     return rows.map((row) => ({
       id: row.id,
       service: row.service,

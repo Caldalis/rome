@@ -17,9 +17,9 @@ export interface DuplicateServiceConnectionGroup {
 }
 
 /**
- * The v1 connection model permits exactly one authority-bearing connection per
- * Service. IDs are included so an operator can resolve legacy duplicates
- * explicitly; the registry never selects, merges, or deletes one on its own.
+ * `ConnectionRegistry.connect` mints a Service's first Connection only. IDs are
+ * included so an operator can resolve the duplicate explicitly; the registry
+ * never selects, merges, or deletes one on its own.
  */
 export class DuplicateServiceConnectionsError extends Error {
   readonly duplicates: readonly DuplicateServiceConnectionGroup[];
@@ -29,23 +29,10 @@ export class DuplicateServiceConnectionsError extends Error {
       .map(({ service, connectionIds }) => `${service}: ${connectionIds.join(", ")}`)
       .join("; ");
     super(
-      `Duplicate Service connections found (${detail}). Rome supports exactly one connection per Service; explicitly remove the unwanted connection before creating another.`,
+      `Duplicate Service connections found (${detail}). connect mints only a Service's first connection; remove the existing one first, or add another account of a Service that offers several.`,
     );
     this.name = "DuplicateServiceConnectionsError";
     this.duplicates = duplicates;
-  }
-}
-
-/** Typed persistence-boundary translation of a `connections.service` unique
- *  constraint violation. The registry turns this into the operator-facing
- *  duplicate error after reading safe connection metadata. */
-export class ServiceConnectionWriteConflict extends Error {
-  readonly service: string;
-
-  constructor(service: string, cause: unknown) {
-    super(`Service "${service}" already has a connection`, { cause });
-    this.name = "ServiceConnectionWriteConflict";
-    this.service = service;
   }
 }
 

@@ -1,7 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
 import { describe, expect, it } from "@rstest/core";
 import type { DrizzleTx, SqliteExec } from "../db/index.js";
 import { createTestDb } from "../test/helpers.js";
@@ -44,9 +40,29 @@ describe("ConnectionRegistry Service uniqueness", () => {
       const rejected = results.find((result) => result.status === "rejected");
       expect(rejected).toMatchObject({ status: "rejected" });
       expect(rejected?.status === "rejected" ? rejected.reason.message : "").toMatch(
-        /exactly one connection per Service/i,
+        /mints only a Service's first connection/i,
       );
       await expect(ledger.listConnections()).resolves.toHaveLength(1);
+    } finally {
+      close();
+    }
+  });
+
+  it("mints another connection when asked, alongside the first", async () => {
+    const { db, close } = createTestDb();
+    try {
+      const ledger = new DrizzleGrantLedger(db);
+      const registry = new ConnectionRegistry({ ledger });
+      registry.register(makeZeroGrantTalk().descriptor);
+      const first = await registry.connect("fake-webchat");
+      const second = await registry.connectAnother("fake-webchat");
+
+      expect(second.id).not.toBe(first.id);
+      expect(registry.find("fake-webchat").map((connection) => connection.id)).toEqual([
+        first.id,
+        second.id,
+      ]);
+      await expect(ledger.listConnections()).resolves.toHaveLength(2);
     } finally {
       close();
     }
@@ -127,89 +143,75 @@ describe("ConnectionRegistry Service uniqueness", () => {
   });
 });
 
-/** Locate the migration that creates the `connections_service_unique` index by
- *  walking the journal's registered migrations and matching on SQL content,
- *  rather than hard-coding a filename. A merge can renumber the migration
- *  (0047 → 0049 → …); a hard-coded path would then silently `ENOENT` and turn
- *  these tests into no-ops. Tying resolution to the journal + the actual index
- *  statement keeps the test bound to the real migration wherever it lands. */
-function resolveUniqueServiceConnectionsMigration(systemMigrationsDir: string): string {
-  const journal = JSON.parse(
-    readFileSync(resolve(systemMigrationsDir, "meta/_journal.json"), "utf8"),
-  ) as { entries: { tag: string }[] };
-  const matches = journal.entries
-    .map((entry) => resolve(systemMigrationsDir, `${entry.tag}.sql`))
-    .filter((path) => readFileSync(path, "utf8").includes("connections_service_unique"));
-  if (matches.length !== 1) {
-    throw new Error(
-      `expected exactly one system migration creating connections_service_unique, found ${matches.length}`,
-    );
-  }
-  return matches[0];
-}
-
-describe("connections.service database invariant", () => {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const migrationPath = resolveUniqueServiceConnectionsMigration(
-    resolve(__dirname, "../../drizzle/system"),
-  );
-
-  function legacyDb(): Database.Database {
-    const sqlite = new Database(":memory:");
-    sqlite.exec(`
-      CREATE TABLE connections (
-        id text PRIMARY KEY NOT NULL,
-        service text NOT NULL,
-        label text NOT NULL,
-        created_at integer NOT NULL
-      );
-    `);
-    return sqlite;
-  }
-
-  function applyMigration(sqlite: Database.Database): void {
-    const sql = readFileSync(migrationPath, "utf8").replaceAll("--> statement-breakpoint", "");
-    sqlite.exec(sql);
-  }
-
-  it("migrates a clean store and prevents a later duplicate", () => {
-    const sqlite = legacyDb();
+describe("connections.service in a migrated store", () => {
+  it("accepts several connections of one Service", async () => {
+    const { db, close } = createTestDb();
     try {
-      sqlite
-        .prepare("INSERT INTO connections VALUES (?, ?, ?, ?)")
-        .run("discord-a", "discord", "Discord", 1);
-      applyMigration(sqlite);
+      const ledger = new DrizzleGrantLedger(db);
+      ledger.writeConnection(db, {
+        id: "discord-a",
+        service: "discord",
+        label: "A",
+        createdAt: new Date(1),
+      });
+      ledger.writeConnection(db, {
+        id: "discord-b",
+        service: "discord",
+        label: "B",
+        createdAt: new Date(2),
+      });
 
-      expect(() =>
-        sqlite
-          .prepare("INSERT INTO connections VALUES (?, ?, ?, ?)")
-          .run("discord-b", "discord", "Discord 2", 2),
-      ).toThrow(/UNIQUE constraint failed: connections\.service/);
+      await expect(ledger.listConnections()).resolves.toHaveLength(2);
     } finally {
-      sqlite.close();
+      close();
     }
   });
 
-  it("rejects the unique-index migration when pre-existing duplicates exist and leaves rows intact", () => {
-    const sqlite = legacyDb();
+  it("lists a Service's connections oldest first, whatever order they were written", async () => {
+    const { db, close } = createTestDb();
     try {
-      const insert = sqlite.prepare("INSERT INTO connections VALUES (?, ?, ?, ?)");
-      insert.run("discord-a", "discord", "Discord A", 1);
-      insert.run("discord-b", "discord", "Discord B", 2);
+      const ledger = new DrizzleGrantLedger(db);
+      ledger.writeConnection(db, {
+        id: "later",
+        service: "discord",
+        label: "B",
+        createdAt: new Date(2_000),
+      });
+      ledger.writeConnection(db, {
+        id: "first",
+        service: "discord",
+        label: "A",
+        createdAt: new Date(1_000),
+      });
 
-      // With the pre-migration preflight gone, the CREATE UNIQUE INDEX itself is
-      // the backstop: it fails loudly on pre-existing duplicates and, because
-      // index creation is atomic, leaves every row untouched for the operator to
-      // resolve.
-      expect(() => applyMigration(sqlite)).toThrow(
-        /UNIQUE constraint failed: connections\.service/,
-      );
-      expect(sqlite.prepare("SELECT id FROM connections ORDER BY id").all()).toEqual([
-        { id: "discord-a" },
-        { id: "discord-b" },
-      ]);
+      const ids = (await ledger.listConnections()).map((record) => record.id);
+      expect(ids).toEqual(["first", "later"]);
     } finally {
-      sqlite.close();
+      close();
+    }
+  });
+
+  it("keeps write order for connections minted in the same second", async () => {
+    const { db, close } = createTestDb();
+    try {
+      const ledger = new DrizzleGrantLedger(db);
+      ledger.writeConnection(db, {
+        id: "zzz-first",
+        service: "discord",
+        label: "A",
+        createdAt: new Date(1_000),
+      });
+      ledger.writeConnection(db, {
+        id: "aaa-later",
+        service: "discord",
+        label: "B",
+        createdAt: new Date(1_500),
+      });
+
+      const ids = (await ledger.listConnections()).map((record) => record.id);
+      expect(ids).toEqual(["zzz-first", "aaa-later"]);
+    } finally {
+      close();
     }
   });
 });

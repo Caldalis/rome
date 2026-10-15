@@ -5,12 +5,7 @@ import type { DrizzleTx } from "../db/index.js";
 import { KeyedMutex } from "../lib/keyed-mutex.js";
 import { createLogger, type Logger } from "../logger.js";
 import type { ConnectionRecord, GrantLedger, GrantRecord, PersistedCredential } from "./ledger.js";
-import {
-  CredentialRejected,
-  Disconnected,
-  DuplicateServiceConnectionsError,
-  ServiceConnectionWriteConflict,
-} from "./errors.js";
+import { CredentialRejected, Disconnected, DuplicateServiceConnectionsError } from "./errors.js";
 import type {
   Act,
   Actor,
@@ -170,8 +165,9 @@ export class ConnectionRegistry {
    *  to own; keys are bounded by the registered services × their grants and
    *  evicted when idle. */
   private readonly sectionMutex = new KeyedMutex();
-  /** Serializes every possible Service-connection mint path. Database
-   *  uniqueness remains the cross-process backstop. */
+  /** Serializes every Service-connection mint path, so `connect`'s refusal of
+   *  a second Connection never races another mint. It holds within one
+   *  process, and one Rome process owns a system database. */
   private readonly connectionMutex = new KeyedMutex();
   private readonly ingressHandlers = new Map<ConnectionId, (input: unknown) => Promise<unknown>>();
   private capabilityActivationPaused = false;
@@ -263,34 +259,39 @@ export class ConnectionRegistry {
 
   /** Mint a new Connection from a registered descriptor. Persists the record,
    *  makes sure every declared grant row exists ("unauthorized"), and builds any
-   *  zero-grant capabilities immediately (epoch from birth). */
+   *  zero-grant capabilities immediately (epoch from birth). Refuses a Service
+   *  that already holds a Connection; {@link connectAnother} is the one path
+   *  that adds a second. */
   async connect(service: string, label?: string): Promise<Connection> {
     return this.connectionMutex.runExclusive(service, async () => {
-      const registered = this.descriptors.get(service);
-      if (!registered) throw new Error(`no registered descriptor for service "${service}"`);
       const existing = this.find(service);
       if (existing.length > 0) {
         throw new DuplicateServiceConnectionsError([
           { service, connectionIds: existing.map((connection) => connection.id) },
         ]);
       }
-
-      const id = crypto.randomUUID();
-      const createdAt = this.clock();
-      const record = { id, service, label: label ?? service, createdAt };
-      try {
-        this.createConnectionWithGrants(record, Object.keys(registered.descriptor.auth));
-      } catch (error) {
-        if (error instanceof ServiceConnectionWriteConflict) {
-          throw await this.duplicateServiceError(service);
-        }
-        throw error;
-      }
-      const conn = new ConnectionImpl(id, service, label ?? service, registered.descriptor, this);
-      this.connections.set(id, conn);
-      await conn.hydrate();
-      return conn;
+      return this.mint(service, label);
     });
+  }
+
+  /** Mint another Connection for a Service, whether or not it already holds
+   *  one. Every other caller assumes one Connection per Service, so only a
+   *  caller that asks for a second account uses this. */
+  async connectAnother(service: string, label?: string): Promise<Connection> {
+    return this.connectionMutex.runExclusive(service, () => this.mint(service, label));
+  }
+
+  private async mint(service: string, label: string | undefined): Promise<Connection> {
+    const registered = this.descriptors.get(service);
+    if (!registered) throw new Error(`no registered descriptor for service "${service}"`);
+    const id = crypto.randomUUID();
+    const createdAt = this.clock();
+    const record = { id, service, label: label ?? service, createdAt };
+    this.createConnectionWithGrants(record, Object.keys(registered.descriptor.auth));
+    const conn = new ConnectionImpl(id, service, label ?? service, registered.descriptor, this);
+    this.connections.set(id, conn);
+    await conn.hydrate();
+    return conn;
   }
 
   /** Persist a connection and all of its initial grant placeholders as one
@@ -301,18 +302,6 @@ export class ConnectionRegistry {
       ledger.writeConnection(tx, record);
       for (const grant of grants) ledger.writeEnsureGrant(tx, record.id, grant);
     });
-  }
-
-  private async duplicateServiceError(service: string): Promise<DuplicateServiceConnectionsError> {
-    const records = await this.ledger.listConnections();
-    return new DuplicateServiceConnectionsError([
-      {
-        service,
-        connectionIds: records
-          .filter((record) => record.service === service)
-          .map((record) => record.id),
-      },
-    ]);
   }
 
   get(id: ConnectionId): Connection {
@@ -401,16 +390,9 @@ export class ConnectionRegistry {
     profile: ProfileRecord | undefined,
     opts: { inTx?: (tx: DrizzleTx) => void } = {},
   ): Promise<Connection> {
-    try {
-      return await this.connectionMutex.runExclusive(service, () =>
-        this.conferExclusive(service, connectionId, grant, credential, profile, opts),
-      );
-    } catch (error) {
-      if (error instanceof ServiceConnectionWriteConflict) {
-        throw await this.duplicateServiceError(service);
-      }
-      throw error;
-    }
+    return this.connectionMutex.runExclusive(service, () =>
+      this.conferExclusive(service, connectionId, grant, credential, profile, opts),
+    );
   }
 
   private async conferExclusive(

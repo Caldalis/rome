@@ -73,3 +73,18 @@ Links and stored rows name the channel. A person Rome reaches through both Teleg
 A service holds at most one Connection, so a channel's live ports have one Connection behind them. Widening that is still its own decision. When it is taken, a second presence of one service is a second channel with its own name, never a second Connection merged into the first.
 
 This narrows the amendment above without withdrawing it. A channel's ports may still have several backers, such as synced tables and a Connection's Talk. "One presence" says whose channel it is, not how many things answer for it.
+
+## Amendment (2026-10-15): several Connections per service
+
+A service may hold several Connections, and the store does not limit it: the unique index on the service column, `connections_service_unique`, is dropped. The registry still guards every existing path. `ConnectionRegistry.connect` refuses a service that already holds a Connection, so the code that reads a service's one Connection keeps working. `connectAnother` is the only path that mints a second, and only a caller that asks for another account of a service uses it. A second Connection is a second presence, so it backs a second channel with its own name, as the amendment above requires.
+
+This narrows two earlier sentences. The decision above says "A service carries at most one Connection", and the 2026-10-08 amendment says "A service holds at most one Connection". Both now hold per channel: a channel's live ports have one Connection behind them, and a service may hold several.
+
+### Alternatives
+
+- **Hold several bots' grants on one Connection.** Rejected because several channels would then share one talker and one health state, so one revoked bot would take down every channel of that service.
+- **Merge a second backer into the service's existing channel.** Rejected because each bot is a separate member wherever it is added. A merged channel cannot tell the bots' conversations apart or link each bot to its own agent.
+
+### Consequences
+
+Uniqueness rests on the registry, not the database. Within the one Rome process, the per-service mint lock holds it, and `connect` refuses a second Connection under that lock. The "future diffs must respect" rule on Connection uniqueness becomes: a Connection backs exactly one channel, and a channel's live ports are backed by one Connection.
