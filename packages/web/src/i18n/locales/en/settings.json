@@ -903,6 +903,10 @@
       "commandHelp": "With Rome Node installed, run this in a terminal on the computer you want Rome to use, not on the Rome server.",
       "access": "Approve access in the browser with the same Rome Cloud account. This allows Rome to run programs as your OS user. Keep the terminal open; Ctrl+C disconnects.",
       "instructions": "Installation and connection guide"
+    },
+    "console": {
+      "title": "Activity",
+      "description": "Commands that agents and tools on this Rome instance sent to your linked computers. History keeps 30 days."
     }
   }
 }

@@ -23,7 +23,13 @@ afterEach(async () => {
 
 async function fixture(handle: (req: IncomingMessage, res: ServerResponse) => void) {
   const directory = await mkdtemp(join(tmpdir(), "rome-node-client-"));
-  cleanup.push(() => rm(directory, { force: true, recursive: true }));
+  cleanup.push(() =>
+    rm(directory, { recursive: true, force: true, maxRetries: 5 }).catch((error) => {
+      // A stopped daemon can hold observe.db open a little longer, and Windows refuses to remove
+      // an open file. A leftover temporary directory is harmless there.
+      if (process.platform !== "win32") throw error;
+    }),
+  );
   const server = createServer(handle);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   cleanup.push(async () => {

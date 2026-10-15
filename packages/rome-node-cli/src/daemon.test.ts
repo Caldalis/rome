@@ -21,7 +21,13 @@ async function fixture(
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "rome-node-daemon-"));
-  cleanup.push(() => rm(root, { force: true, recursive: true }));
+  cleanup.push(() =>
+    rm(root, { recursive: true, force: true, maxRetries: 5 }).catch((error) => {
+      // A stopped daemon can hold observe.db open a little longer, and Windows refuses to remove
+      // an open file. A leftover temporary directory is harmless there.
+      if (process.platform !== "win32") throw error;
+    }),
+  );
   const token = `romedev_${"a".repeat(43)}`;
   const instanceToken = "romeinst_test";
   let lists = 0;
@@ -306,10 +312,10 @@ describe("standalone CLI daemon processes", () => {
       expect(await request("daemon.hello", { protocolVersion })).toMatchObject({
         error: { code: -32002 },
       });
-    expect(await request("daemon.hello", { protocolVersion: 3 })).toEqual({
+    expect(await request("daemon.hello", { protocolVersion: 4 })).toEqual({
       jsonrpc: "2.0",
       id: "test",
-      result: { pid: state.pid, protocolVersion: 3, connection: "stopped" },
+      result: { pid: state.pid, protocolVersion: 4, connection: "stopped" },
     });
     expect(await request("devices.run")).toMatchObject({ error: { code: -32602 } });
     expect(await request("events.subscribe", { topic: "unknown" })).toMatchObject({

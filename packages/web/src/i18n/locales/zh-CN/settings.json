@@ -903,6 +903,10 @@
       "commandHelp": "安装 Rome Node 后，在需要让 Rome 使用的电脑终端中运行此命令，而不是在 Rome 服务器上运行。",
       "access": "在浏览器中使用同一个 Rome Cloud 账户批准访问。这允许 Rome 以当前系统用户身份运行程序。请保持终端开启；按 Ctrl+C 断开连接。",
       "instructions": "安装与连接指南"
+    },
+    "console": {
+      "title": "活动",
+      "description": "此 Rome 实例上的 agent 和工具发送到你已关联电脑的命令。历史保留 30 天。"
     }
   }
 }

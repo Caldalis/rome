@@ -80,7 +80,7 @@ Gateway presence protocol is involved.
 Clients connect to `ws://127.0.0.1:<port>/rpc` using the private credential from
 `daemon.json` in an Authorization header. Browser Origin requests are rejected.
 The connection uses JSON-RPC 2.0 and starts with `daemon.hello`, passing
-`{ protocolVersion: 3 }`. This local protocol is separate from Gateway envelopes.
+`{ protocolVersion: 4 }`. This local protocol is separate from Gateway envelopes.
 
 | Method | Purpose |
 | --- | --- |
@@ -92,8 +92,10 @@ The connection uses JSON-RPC 2.0 and starts with `daemon.hello`, passing
 | `devices.run` | Forward `{ deviceId, action, args }` to a device |
 | `devices.runBinary` | Forward `{ deviceId, action, args }` and input bytes to a device as a binary frame |
 | `files.copy` | Copy `{ direction, localPath, deviceId, remotePath }` between the daemon's computer and a device |
-| `events.subscribe` | Subscribe with `{ topic: "connection" }` |
-| `events.unsubscribe` | Remove the connection's subscription |
+| `node.status` | Read the daemon version, start time, and the state of each role |
+| `log.query` | Read the [activity log](#activity-log) with a structured query |
+| `events.subscribe` | Subscribe with `{ topic: "connection" }` or `{ topic: "node" }` |
+| `events.unsubscribe` | Remove the connection's subscription to that topic |
 
 Every method except `devices.runBinary` uses text messages. `devices.runBinary`
 uses one binary WebSocket message in each direction, so bytes are never JSON or
@@ -121,9 +123,9 @@ Subscription registers the listener and sends an `events.connection` notificatio
 with `{ pid, protocolVersion, connection }` before acknowledging the request.
 The JS API wraps snapshots as `{ transport: "connected", daemon: snapshot }`.
 Local disconnection emits `{ transport: "disconnected", daemon: null, reason }`,
-so consumers can clear stale state. The only topic is currently caller connection
-status. Remote device presence events, logs, and streaming action output are not
-provided. Device reachability snapshots use `devices.status`.
+so consumers can clear stale state. The `node` topic carries the
+[activity log](#activity-log) events. Remote device presence events and streaming
+action output are not provided. Device reachability snapshots use `devices.status`.
 
 `client.subscribe("connection", listener)` and `rome-node watch` start the daemon
 when initially subscribed. After a connection loss they reconnect to an existing
@@ -143,6 +145,59 @@ limited to detecting and explicitly stopping a running HTTP daemon with the
 existing private credential. An explicit stop also reaches an RPC daemon with an
 older protocol version, using that version for its handshake. A client never
 silently replaces an incompatible daemon.
+
+## Activity log
+
+The daemon records each action it sends through `devices.run`,
+`devices.runBinary`, or `files.copy` in `<configDir>/observe.db`, a SQLite file
+written with Node's built-in `node:sqlite`. The daemon is its only writer. The
+file has mode 0600 and uses WAL. It holds history only: the daemon needs nothing
+in it to run, and losing it loses only past records.
+
+No storage failure blocks or fails an action. The daemon handles a file it cannot
+use by cause:
+
+| Cause | Result |
+| --- | --- |
+| Corrupt file | Renamed to `observe.db.corrupt-<ms>` and replaced. Only the newest copy is kept. |
+| Another schema version | Deleted and replaced |
+| Lock, permission error, full disk, or a WAL that cannot be removed | File left as it is. Nothing is recorded until the next start. |
+
+An action row holds the device, the action, the full exec command, arguments, and
+working directory, the start and end times, and the outcome: `ok`, `error`,
+`aborted`, `unknown_outcome`, or `interrupted`. An action the previous daemon left
+running becomes `interrupted` at the next start. The row counts stdin, stdout, and
+stderr bytes and never stores their content. `system.info` requests, including
+reachability probes, are not recorded. The daemon replaces each occurrence of its
+own credentials with `*` of the same length. Rows older than 30 days are deleted,
+and the oldest rows go first when the file exceeds 64 MiB. Only that size limit
+rebuilds the search index, because the rebuild runs on the daemon's event loop.
+
+`log.query` takes a structured query, never SQL: `{ kind: "actions" }` with the
+optional filters `before` (an action id), `limit` (100, at most 500),
+`direction`, `peer`, `outcome[]`, and `text`. It returns `{ rows, hasMore }`,
+newest first.
+
+`text` matches a substring of the command, arguments, or working directory and
+needs at least three characters. One response stays under 1 MiB, and one action
+row carries at most 16 Ki characters of text, with `truncated` set when cut.
+
+Subscribing to the `node` topic sends a `snapshot` event with the `node.status`
+result and the running actions before the acknowledgement. Then `events.node`
+notifications carry `connection` and `action` (`start` and `end`) events.
+There is no replay. After a reconnect, a client fills the gap with `log.query`.
+
+Settings → Devices shows this log for the daemon on the Rome instance under
+**Activity**. The dashboard opens `/ws/node`, and Rome Core forwards the
+observation methods to the daemon unchanged through `openConsoleBridge` from
+`@rome-os/node-core/client`. A browser cannot send the daemon's Authorization
+header, so it never connects to the daemon directly. Other methods, such as
+`devices.run` and `daemon.stop`, do not pass. The socket admits only the
+guardian, as [access control](architecture/access-control.md) describes.
+
+The console UI lives in `@rome-os/node-ui` (`packages/rome-node-ui`), separate
+from the dashboard. A host mounts `<NodeConsole url devices locale />` with the
+WebSocket URL of a forwarding backend, and supplies the section heading.
 
 ## Authorization and transport
 

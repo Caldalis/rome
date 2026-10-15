@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { devicesStatusSchema } from "@rome/api-types/devices";
+import { NODE_CONSOLE_PATH } from "@rome/api-types/node-console";
+import { NodeConsole } from "@rome-os/node-ui";
 import {
   Measure,
   Section,
@@ -15,6 +17,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusIndicator } from "@/lib/connection-status";
 import { fetchJson } from "@/lib/fetch-json";
+
+function nodeConsoleUrl(): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}${NODE_CONSOLE_PATH}`;
+}
 
 export function DevicesSection() {
   const { t, i18n } = useTranslation("settings");
@@ -185,6 +192,15 @@ export function DevicesSection() {
             </CardContent>
           </Card>
         )}
+      </Section>
+      <Section aria-labelledby="node-console-title">
+        <SectionHeader>
+          <SectionHeading>
+            <SectionTitle id="node-console-title">{t("devices.console.title")}</SectionTitle>
+            <SectionDescription>{t("devices.console.description")}</SectionDescription>
+          </SectionHeading>
+        </SectionHeader>
+        <NodeConsole url={nodeConsoleUrl()} devices={devices} locale={i18n.language} />
       </Section>
       <Section aria-labelledby="connect-computer-title">
         <SectionHeader>
