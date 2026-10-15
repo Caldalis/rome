@@ -1770,7 +1770,11 @@ export function createHistoryHandler(scope: FileBrowserScope): Handler {
         .split("\n")
         .filter(Boolean)
         .map((line) => {
-          const [hash, message, date] = line.split("|");
+          const firstSeparator = line.indexOf("|");
+          const lastSeparator = line.lastIndexOf("|");
+          const hash = line.slice(0, firstSeparator);
+          const message = line.slice(firstSeparator + 1, lastSeparator);
+          const date = line.slice(lastSeparator + 1);
           return { date, hash, message };
         });
 
