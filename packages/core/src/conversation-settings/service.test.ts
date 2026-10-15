@@ -158,7 +158,7 @@ describe("ConversationSettingsService", () => {
 
     // Simulate a stale child override written by the previous model. Thread
     // reads must ignore it and resolve the parent as the sole settings owner.
-    repository.mutate(childDescriptor, {
+    repository.mutate(childDescriptor, childDescriptor.service, {
       settings: {
         schemaVersion: 1,
         overrides: { enabled: true },
@@ -521,6 +521,22 @@ describe("ConversationSettingsService", () => {
     expect(repository.find("discord", "parent" as ConversationId)?.channelSettings).not.toBeNull();
   });
 
+  it("still reads a seen conversation and its settings once its connection is removed", async () => {
+    const { registry, service, wechat } = await setup();
+    const ref: ConversationRef = {
+      connectionId: wechat.id,
+      conversationId: "wechat-group" as ConversationId,
+    };
+    service.observe({ ref, service: "wechat", kind: "group", displayName: "WeChat group" });
+    await service.update({ ref, set: { enabled: false }, clear: [], actor: { kind: "guardian" } });
+
+    await registry.remove(wechat.id);
+
+    const snapshot = await service.get(ref);
+    expect(snapshot.conversation.displayName).toBe("WeChat group");
+    expect(snapshot.effective.enabled).toBe(false);
+  });
+
   it("serializes concurrent writers per conversation", async () => {
     let releaseFirst!: () => void;
     const onChanged = rs.fn(
@@ -612,7 +628,7 @@ describe("ConversationSettingsService", () => {
       displayName: `channel-${index}`,
     }));
     for (const descriptor of descriptors) {
-      repository.mutate(descriptor, { settings: null, agentName: null });
+      repository.mutate(descriptor, descriptor.service, { settings: null, agentName: null });
     }
     repository.mutate(
       {
@@ -622,6 +638,7 @@ describe("ConversationSettingsService", () => {
         displayName: "topic-1",
         parent: descriptors[0]!.ref,
       },
+      "discord",
       { settings: null, agentName: null },
     );
     const find = rs.spyOn(repository, "find");
@@ -659,6 +676,7 @@ describe("ConversationSettingsService", () => {
           kind: "channel",
           displayName: "chat-2",
         },
+        "webchat",
         { settings: null, agentName: undefined },
       ),
     ).toThrow("Webchat chats have no conversation settings");

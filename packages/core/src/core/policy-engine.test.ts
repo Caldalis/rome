@@ -25,6 +25,9 @@ function makeContext(overrides?: Partial<PolicyContext>): PolicyContext {
   };
 }
 
+// A later channel carries an opaque name.
+const LATER_TELEGRAM = "9b2f4c1e-telegram-bot";
+
 describe("PolicyEngine", () => {
   let testDb: TestDb;
   let policiesRepo: PoliciesRepository;
@@ -85,6 +88,19 @@ describe("PolicyEngine", () => {
 
     const result = await engine.evaluate(makeContext({ sender: null, bondLevel: "other" }));
     expect(result).toEqual({ action: "sentinel_review" });
+  });
+
+  it("evaluate() applies a service's channel policy to its later channels", async () => {
+    engine = new PolicyEngine(policiesRepo, settingsRepo, (name) =>
+      name === LATER_TELEGRAM ? "telegram" : name,
+    );
+    await seedPolicy({ type: "channel", channel: "telegram" }, "block", 20);
+
+    const context = makeContext({ channel: LATER_TELEGRAM, sender: null, bondLevel: "other" });
+    await expect(engine.evaluate(context)).resolves.toEqual({ action: "block" });
+
+    await seedPolicy({ type: "channel", channel: LATER_TELEGRAM }, "sentinel_review", 10);
+    await expect(engine.evaluate(context)).resolves.toEqual({ action: "sentinel_review" });
   });
 
   it("evaluate() falls back to global policy", async () => {
