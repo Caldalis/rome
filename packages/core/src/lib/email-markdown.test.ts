@@ -61,6 +61,35 @@ describe("inboundBodyToMarkdown", () => {
     expect(inboundBodyToMarkdown({ text: "from text" })).toBe("from text");
     expect(inboundBodyToMarkdown({}, "the preview")).toBe("the preview");
   });
+
+  it("falls back to the preview when stripped text cleans to empty", () => {
+    for (const strippedText of ["https://track.example/message", "\u200B\u00AD", "&nbsp;"]) {
+      expect(inboundBodyToMarkdown({ strippedText }, "  The message preview  ")).toBe(
+        "The message preview",
+      );
+    }
+  });
+
+  it("preserves the preview when all body alternatives clean to empty", () => {
+    expect(
+      inboundBodyToMarkdown(
+        {
+          html: '<img src="https://track.example/pixel.png">',
+          text: "https://track.example/message",
+          strippedHtml: "<p>&nbsp;</p>",
+          strippedText: "https://track.example/message",
+        },
+        "The message preview",
+      ),
+    ).toBe("The message preview");
+  });
+
+  it("uses nonempty stripped text before the preview", () => {
+    expect(inboundBodyToMarkdown({ strippedText: "  Useful body  " }, "preview")).toBe(
+      "Useful body",
+    );
+    expect(inboundBodyToMarkdown({ strippedText: "https://track.example/message" })).toBe("");
+  });
 });
 
 describe("markdownToEmailHtml (outbound Markdown → HTML)", () => {

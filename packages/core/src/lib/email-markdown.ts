@@ -156,7 +156,10 @@ export function inboundBodyToMarkdown(body: RomeMailBody, preview?: string): str
     const md = htmlToMarkdown(body.strippedHtml);
     if (md) return md;
   }
-  if (body.strippedText?.trim()) return cleanPlainText(body.strippedText);
+  if (body.strippedText?.trim()) {
+    const md = cleanPlainText(body.strippedText);
+    if (md) return md;
+  }
   return (preview ?? "").trim();
 }
 
