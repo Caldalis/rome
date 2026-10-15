@@ -32,7 +32,7 @@ const PAGES = [
 
 async function openPage(page: Page, path: string, frame: string) {
   await page.goto(path);
-  // A cold rsbuild dev server compiles the route's chunk on demand.
+  // A shared runner can render the route far slower than a warm local machine.
   await expect(page.locator(frame).last()).toBeVisible({ timeout: 30_000 });
 }
 
