@@ -45,7 +45,7 @@ async function measure(page: Page) {
 async function openComposer(page: Page) {
   await page.addInitScript(() => localStorage.setItem("i18nextLng", "en"));
   await page.goto("/chat");
-  // A cold rsbuild dev server compiles the route's chunk on demand.
+  // A shared runner can render the route far slower than a warm local machine.
   await expect(page.locator(`${BOX} textarea`)).toBeVisible({ timeout: 30_000 });
   await page.evaluate(() => document.fonts.ready);
 }

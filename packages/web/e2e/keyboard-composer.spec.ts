@@ -26,7 +26,7 @@ test.use({ viewport: PHONE, hasTouch: true, isMobile: true });
 
 async function openChat(page: Page) {
   await page.goto(CHAT);
-  // A cold rsbuild dev server compiles the route's chunk on demand.
+  // A shared runner can render the route far slower than a warm local machine.
   await expect(page.locator(`${COMPOSER} textarea`)).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("[data-timeline-anchor]").last()).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
