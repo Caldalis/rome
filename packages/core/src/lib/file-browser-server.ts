@@ -919,7 +919,8 @@ function parseRangeHeader(
     end = size - 1;
   }
 
-  if (start < 0 || end < start || end >= size) return null;
+  if (start < 0 || start >= size || end < start) return null;
+  end = Math.min(end, size - 1);
 
   return { start, end };
 }
