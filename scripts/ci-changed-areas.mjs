@@ -120,10 +120,7 @@ export function changedFiles(env = process.env) {
     return null;
   }
 
-  return git(["diff", "--name-only", base, "HEAD"])
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+  return git(["diff", "--name-only", "-z", base, "HEAD"]).split("\0").filter(Boolean);
 }
 
 function main() {
