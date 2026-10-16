@@ -8,8 +8,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { useSearchParams } from "react-router-dom";
-import { useTranslation } from "react-i18next";
+import { Link, useSearchParams } from "react-router-dom";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import type { TFunction } from "i18next";
 import { Search } from "lucide-react";
@@ -44,9 +44,9 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Spinner } from "@rome-os/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { artifactLocalName, artifactOwnerId } from "@/lib/artifact-name";
-import { serviceLabel } from "@/lib/connection-cards";
+import { connectionRoute, serviceLabel } from "@/lib/connection-cards";
 import { fetchConnections, type ApiConnection } from "@/lib/connections-api";
-import { MAIN_AGENT_ID } from "@rome/api-types/linked-agents";
+import { LINKABLE_SERVICES, MAIN_AGENT_ID } from "@rome/api-types/linked-agents";
 
 interface PageResponse {
   items: ConversationSettingsListItem[];
@@ -132,6 +132,28 @@ export function ChannelsSettingsPage() {
         connection.id !== null && connection.capabilities.talk?.state !== "unsupported"
           ? [{ id: connection.id, label: connection.label }]
           : [],
+      ),
+    [connections],
+  );
+
+  // A linkable account with no linked agent answers nothing, whatever agent a
+  // conversation on it picks. A core that predates links omits `linkedAgent`.
+  // Each maps to the page that links its agent.
+  const silentAccounts = useMemo(
+    () =>
+      new Map(
+        connections.flatMap((connection) =>
+          connection.id !== null &&
+          LINKABLE_SERVICES.has(connection.service) &&
+          connection.linkedAgent === null
+            ? [
+                [
+                  connection.id,
+                  `/settings/connections/${encodeURIComponent(connectionRoute(connection))}`,
+                ],
+              ]
+            : [],
+        ),
       ),
     [connections],
   );
@@ -247,6 +269,7 @@ export function ChannelsSettingsPage() {
                 key={`${item.snapshot.conversation.ref.connectionId}:${item.snapshot.conversation.ref.conversationId}`}
                 item={item}
                 agentNames={agentNames}
+                silentAccount={silentAccounts.get(item.snapshot.conversation.ref.connectionId)}
                 onSaved={handleSaved}
               />
             ))}
@@ -271,10 +294,14 @@ export function ChannelsSettingsPage() {
 function ConversationRow({
   item,
   agentNames,
+  silentAccount,
   onSaved,
 }: {
   item: ConversationSettingsListItem;
   agentNames: string[];
+  /** Set when the conversation's account stays silent: the page that links
+   *  its agent. */
+  silentAccount: string | undefined;
   onSaved: (snapshot: ConversationSettingsSnapshot) => void;
 }) {
   const { t } = useTranslation("settings");
@@ -284,8 +311,11 @@ function ConversationRow({
   const { snapshot } = item;
   const conversation = snapshot.conversation;
   const supported = new Set(snapshot.supportedFields);
+  const silent = silentAccount !== undefined;
+  const agentOverridden = settingSource(snapshot, "routing.agentName") === "overridden";
   const overrideCount = snapshot.supportedFields.filter(
-    (field) => settingSource(snapshot, field) === "overridden",
+    (field) =>
+      settingSource(snapshot, field) === "overridden" && !(field === "routing.agentName" && silent),
   ).length;
   const [draft, setDraft] = useState<ConversationSettings>(() =>
     structuredClone(snapshot.effective),
@@ -572,7 +602,28 @@ function ConversationRow({
       </SettingSection>
 
       <SettingSection title={t("channels.conversationSettings.sections.routing")}>
-        {supported.has("routing.agentName") && (
+        {supported.has("routing.agentName") && silent && (
+          <SettingRow field="agent" overridden={false}>
+            <div className="sm:max-w-xs">
+              <p className="text-ui text-foreground">{t("connections.accounts.noAgent")}</p>
+              <p className="mt-1 text-aux text-muted-foreground">
+                {t("channels.conversationSettings.silentAccount")}{" "}
+                <Trans
+                  t={t}
+                  i18nKey="channels.conversationSettings.silentAccountLink"
+                  components={{
+                    account: <Link to={silentAccount} className="underline underline-offset-2" />,
+                  }}
+                />
+                {agentOverridden &&
+                  ` ${t("channels.conversationSettings.silentAccountOverride", {
+                    agent: overriddenAgentLabel(snapshot.overrides.routing?.agentName),
+                  })}`}
+              </p>
+            </div>
+          </SettingRow>
+        )}
+        {supported.has("routing.agentName") && !silent && (
           <SettingRow
             field="agent"
             overridden={settingSource(snapshot, "routing.agentName") === "overridden"}
@@ -590,9 +641,7 @@ function ConversationRow({
                   <SelectItem key={name} value={name}>
                     {name === "main"
                       ? t("channels.conversationSettings.mainAgent")
-                      : [artifactLocalName(name), artifactOwnerId(name)]
-                          .filter((part): part is string => Boolean(part && part !== "core"))
-                          .join(" · ")}
+                      : agentLabel(name)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -602,6 +651,18 @@ function ConversationRow({
       </SettingSection>
     </article>
   );
+}
+
+/** A stored agent choice, where null and either spelling of main pin main. */
+function overriddenAgentLabel(name: string | null | undefined): string {
+  return !name || name === "main" || name === MAIN_AGENT_ID ? "main" : agentLabel(name);
+}
+
+/** An agent's name and, unless it is core, its owner. */
+function agentLabel(name: string): string {
+  return [artifactLocalName(name), artifactOwnerId(name)]
+    .filter((part): part is string => Boolean(part && part !== "core"))
+    .join(" · ");
 }
 
 /** Every control in the right-hand column lands on the same width. */
