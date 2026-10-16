@@ -14,7 +14,8 @@ export interface ConnectionAccountFields {
    *  placeholders and services without a Talk. */
   channel?: string | null;
   /** Canonical id of the agent linked to this account (`sales:agent`,
-   *  `core:main`), or null when none is, which leaves the account silent. */
+   *  `core:main`), or null when none is, which leaves the account silent.
+   *  Absent for placeholders and for a service that takes no link. */
   linkedAgent?: string | null;
   /** Whether the service offers "add another account". */
   severalAccounts?: boolean;

@@ -481,6 +481,60 @@ describe("POST /connections", () => {
     expect(channelOf(connection.id)).not.toBe("telegram");
   });
 
+  it("reports the agent linked to each account", async () => {
+    const { db, close } = createTestDb();
+    openDbs.push(close);
+    const records = new ChannelRecordsRepository(db);
+    const registry = new ConnectionRegistry({
+      ledger: new DrizzleGrantLedger(db),
+      onMint: (tx, record) => {
+        records.claim(tx, record, record.createdAt);
+      },
+    });
+    registry.register({ ...telegram.descriptor, service: "telegram" });
+    const conn = await registry.connect("telegram");
+    records.link("telegram", "sales:agent");
+
+    const { connections } = await (
+      await makeApp(registry, undefined, { db }).request("/connections")
+    ).json();
+
+    expect(connections.find((each: { id: string }) => each.id === conn.id)).toMatchObject({
+      channel: "telegram",
+      linkedAgent: "sales:agent",
+    });
+
+    records.link("telegram", null);
+    const relisted = await (
+      await makeApp(registry, undefined, { db }).request("/connections")
+    ).json();
+    expect(
+      relisted.connections.find((each: { id: string }) => each.id === conn.id).linkedAgent,
+    ).toBeNull();
+  });
+
+  it("reports no linked agent for a service that takes no link", async () => {
+    const { db, close } = createTestDb();
+    openDbs.push(close);
+    const records = new ChannelRecordsRepository(db);
+    const registry = new ConnectionRegistry({
+      ledger: new DrizzleGrantLedger(db),
+      onMint: (tx, record) => {
+        records.claim(tx, record, record.createdAt);
+      },
+    });
+    registry.register({ ...telegram.descriptor, service: "whatsapp" });
+    const conn = await registry.connect("whatsapp");
+
+    const { connections } = await (
+      await makeApp(registry, undefined, { db }).request("/connections")
+    ).json();
+
+    const listed = connections.find((each: { id: string }) => each.id === conn.id);
+    expect(listed.channel).toBe("whatsapp");
+    expect("linkedAgent" in listed).toBe(false);
+  });
+
   it("hands back an account whose setup never finished instead of minting", async () => {
     const registry = telegramRegistry();
     const first = await registry.connect("telegram");

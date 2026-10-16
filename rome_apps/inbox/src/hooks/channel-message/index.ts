@@ -33,7 +33,11 @@ export class ChannelMessageHook implements ChannelMessageHookInterface {
     private readonly conversationSettings: ConversationSettingsControl,
     private readonly chatStop: ChatStopHandler,
     private readonly channels: readonly Channel[],
-    private readonly options: { slowTurnMs?: number; log?: Pick<typeof log, "warn"> } = {},
+    private readonly options: {
+      slowTurnMs?: number;
+      log?: Pick<typeof log, "warn">;
+      linkedAgentOf?: ChannelMessageHookDeps["linkedAgentOf"];
+    } = {},
   ) {}
 
   /** Subscribe to every channel that can receive. A channel's subscription
@@ -124,11 +128,25 @@ export class ChannelMessageHook implements ChannelMessageHookInterface {
       return;
     }
 
-    let enabled = true;
-    let routedAgentName: string | undefined;
+    // Read per message, since a relink changes it on the same channel. `/stop`
+    // above still reaches a turn that started before an unlink.
+    const linkedAgent = this.options.linkedAgentOf?.(service);
+    if (linkedAgent === null) {
+      log.debug("account has no linked agent; not answering", {
+        service,
+        messageId: message.messageId,
+      });
+      return;
+    }
+
     const snapshot = await this.conversationSettings.get(ref);
-    enabled = snapshot.effective.enabled;
-    routedAgentName = snapshot.effective.routing.agentName ?? undefined;
+    const enabled = snapshot.effective.enabled;
+    // A group's own agent choice, which wins over the account's linked agent.
+    // An explicit pin to main is stored as null, apart from no choice at all.
+    const routedAgentName =
+      snapshot.overrides.routing?.agentName === null
+        ? "core:main"
+        : (snapshot.effective.routing.agentName ?? undefined);
     if (!enabled) {
       log.debug("conversation disabled", { connectionId, conversationId: message.conversationId });
       return;
@@ -170,7 +188,10 @@ export class ChannelMessageHook implements ChannelMessageHookInterface {
         });
         return null;
       });
-    void this.runTurn(message, service, connectionId, attachments, routedAgentName, activity);
+    void this.runTurn(message, service, connectionId, attachments, activity, {
+      routedAgentName,
+      linkedAgentName: linkedAgent,
+    });
   }
 
   private async runTurn(
@@ -178,8 +199,8 @@ export class ChannelMessageHook implements ChannelMessageHookInterface {
     service: string,
     connectionId: string,
     attachments: InboundEvent["message"]["attachments"],
-    routedAgentName: string | undefined,
     activity: Promise<ChannelActivitySession | null>,
+    agents: { routedAgentName: string | undefined; linkedAgentName: string | undefined },
   ): Promise<void> {
     const slowTurnMs = this.options.slowTurnMs ?? SLOW_TURN_MS;
     const slow = setTimeout(() => {
@@ -207,7 +228,7 @@ export class ChannelMessageHook implements ChannelMessageHookInterface {
           attachments,
           messageId: message.messageId,
           replyTo: message.replyTo,
-          routedAgentName,
+          ...agents,
         },
         {
           initiator: `connection:${connectionId}`,
@@ -278,5 +299,6 @@ export function createHook(deps: ChannelMessageHookDeps): ChannelMessageHookInte
     deps.conversationSettings,
     deps.chatStop,
     deps.channels,
+    { linkedAgentOf: deps.linkedAgentOf },
   );
 }

@@ -11,6 +11,7 @@
 // `POST /connections` mints before its setup runs.
 
 import type { ConnectionAccountFields } from "@rome/api-types/channel-accounts";
+import { LINKABLE_SERVICES } from "@rome/api-types/linked-agents";
 import { Hono } from "hono";
 import { isSameOriginMutationRequest } from "../../lib/mutation-origin.js";
 import { isEnabledOAuthProvider, isOAuthProvider } from "../../lib/oauth-providers.js";
@@ -71,7 +72,8 @@ interface ConnectHint {
 }
 
 interface ConnectionView
-  extends Required<Pick<ConnectionAccountFields, "channel" | "severalAccounts">> {
+  extends Required<Pick<ConnectionAccountFields, "channel" | "severalAccounts">>,
+    Pick<ConnectionAccountFields, "linkedAgent"> {
   /** Ledger connection id, or null for an offerable placeholder — a registered
    *  service the guardian has never connected (nothing to address or tear down
    *  yet; the connect setup mints the row). */
@@ -152,6 +154,8 @@ function buildConnectionView(
     connect: connectHint(conn.service),
     setups: activeSetups(manager, conn.id, Object.keys(grants)),
     channel: channel?.id ?? null,
+    // Null means silent, so a service that takes no link reports none.
+    linkedAgent: LINKABLE_SERVICES.has(conn.service) ? (channel?.agent ?? null) : undefined,
     severalAccounts: registry.getDescriptor(conn.service)?.severalAccounts === true,
   };
 }

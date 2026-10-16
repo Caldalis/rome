@@ -442,6 +442,110 @@ describe("ChannelMessageHook", () => {
     expect(harness.subscribes).toHaveBeenCalledTimes(8);
   });
 
+  describe("on accounts that take a linked agent", () => {
+    // feishu-2 takes a link, and telegram stands for a channel that takes none.
+    let linked: string | null;
+    const linkedAgentOf = rs.fn((name: string) => (name === "feishu-2" ? linked : undefined));
+
+    beforeEach(async () => {
+      linked = "sales:agent";
+      linkedAgentOf.mockClear();
+      harness = createHarness({ linkedAgentOf });
+      harness.channels.push(harness.channel("feishu-2", FEISHU_2_ID));
+      await harness.hook.register();
+      harness.get.mockImplementation(async ({ connectionId, conversationId }) =>
+        snapshot(connectionId, conversationId, { agentName: "override" }),
+      );
+    });
+
+    const passed = (fields: Record<string, unknown>) => [
+      "message_handler",
+      expect.objectContaining(fields),
+      expect.anything(),
+    ];
+
+    it("passes the linked agent read per message, with the group's choice", async () => {
+      await harness.emit(FEISHU_2_ID, message({ messageId: "m-1" }));
+      linked = "support:agent";
+      await harness.emit(FEISHU_2_ID, message({ messageId: "m-2" }));
+      await harness.emit(TELEGRAM_ID, message({ messageId: "m-3" }));
+
+      expect(harness.run).toHaveBeenNthCalledWith(
+        1,
+        ...passed({ linkedAgentName: "sales:agent", routedAgentName: "override" }),
+      );
+      expect(harness.run).toHaveBeenNthCalledWith(
+        2,
+        ...passed({ linkedAgentName: "support:agent", routedAgentName: "override" }),
+      );
+      expect(harness.run).toHaveBeenNthCalledWith(
+        3,
+        ...passed({ linkedAgentName: undefined, routedAgentName: "override" }),
+      );
+      expect(linkedAgentOf).toHaveBeenCalledWith("feishu-2");
+    });
+
+    it("passes a group's explicit pin to main as its choice", async () => {
+      harness.get.mockImplementation(async ({ connectionId, conversationId }) => ({
+        ...snapshot(connectionId, conversationId),
+        overrides: { routing: { agentName: null } },
+      }));
+
+      await harness.emit(FEISHU_2_ID, message());
+
+      expect(harness.run).toHaveBeenCalledWith(
+        ...passed({ linkedAgentName: "sales:agent", routedAgentName: "core:main" }),
+      );
+    });
+
+    it("answers nothing on an account with no linked agent", async () => {
+      linked = null;
+
+      await harness.emit(FEISHU_2_ID, message({ messageId: "m-1" }));
+
+      expect(harness.run).not.toHaveBeenCalled();
+      expect(harness.get).not.toHaveBeenCalled();
+      expect(harness.send).not.toHaveBeenCalled();
+
+      linked = "sales:agent";
+      await harness.emit(FEISHU_2_ID, message({ messageId: "m-2" }));
+      expect(harness.run).toHaveBeenCalledWith(
+        ...passed({ channel: "feishu-2", linkedAgentName: "sales:agent" }),
+      );
+    });
+
+    it("still stops a running turn on an account that is now unlinked", async () => {
+      linked = null;
+
+      await harness.emit(
+        FEISHU_2_ID,
+        message({ messageId: "stop", text: "/stop", thread: { kind: "dm" } }),
+      );
+
+      expect(harness.stop).toHaveBeenCalledTimes(1);
+      expect(harness.run).not.toHaveBeenCalled();
+    });
+  });
+
+  it("reads every channel as taking no link on a host that passes no linkedAgentOf", async () => {
+    const hook = createHook({
+      actionEngine: { run: harness.run } as unknown as ActionEngineLike,
+      conversationSettings: { get: harness.get } as unknown as ConversationSettingsControl,
+      chatStop: harness.stop,
+      channels: harness.channels,
+    });
+    harness.hook.unregister();
+    await hook.register();
+
+    await harness.emit(TELEGRAM_ID, message());
+
+    expect(harness.run).toHaveBeenCalledWith(
+      "message_handler",
+      expect.objectContaining({ channel: "telegram", linkedAgentName: undefined }),
+      expect.anything(),
+    );
+  });
+
   it("refuses, by name, a host that passes no channels", () => {
     expect(() =>
       createHook({
