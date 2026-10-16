@@ -532,6 +532,8 @@ function mergeTraceContent(stubContent: string, blockContents: string[]): string
 
 /** Max rows per INSERT batch, keeping bound parameters well under SQLite limits. */
 const TRACE_BLOCK_INSERT_CHUNK = 200;
+export const INTERRUPTED_TURN_ERROR =
+  "Rome restarted while this was running. The task did not finish.";
 
 function traceAccountingColumns(role: string, content: string): TraceAccountingTotals | null {
   if (role !== "trace") return null;
@@ -1806,6 +1808,85 @@ export class WebChatRepository {
       .update(romeAgentMessages)
       .set({ inputState: "unknown" })
       .where(inArray(romeAgentMessages.inputState, ["queued", "submitted", "accepted"]));
+  }
+
+  /**
+   * End the turns a stopped Rome process left open. A crash writes no
+   * `turn_end`, so the turn would look unfinished forever. Each trace started
+   * within `windowMs` of the newest trace whose last `turn_start` has no later
+   * `turn_end` gets an `error` block and a `turn_end` with status `error`.
+   * Counting from the newest trace, not from now, keeps the stopped process's
+   * turns in range however long Rome was down. Older traces stay as they are.
+   * Returns how many turns it ended.
+   */
+  async endInterruptedTurns(windowMs: number): Promise<number> {
+    const newest = await this.db
+      .select({ createdAt: sql<number | null>`max(${romeAgentMessages.createdAt})` })
+      .from(romeAgentMessages)
+      .where(eq(romeAgentMessages.role, "trace"))
+      .get();
+    if (newest?.createdAt == null) return 0;
+    // `created_at` is stored in seconds.
+    const since = new Date(newest.createdAt * 1000 - windowMs);
+    const blockSeq = (type: string) => sql<number | null>`(
+      select max(b."seq") from "rome_agent_trace_blocks" b
+      where b."message_id" = ${romeAgentMessages.id}
+        and json_extract(b."content", '$.type') = ${type}
+    )`;
+    const traces = await this.db
+      .select({
+        id: romeAgentMessages.id,
+        sessionId: romeAgentMessages.sessionId,
+        turnId: romeAgentMessages.turnId,
+        lastStart: blockSeq("turn_start"),
+        lastEnd: blockSeq("turn_end"),
+        lastSeq: sql<number>`(
+          select max(b."seq") from "rome_agent_trace_blocks" b
+          where b."message_id" = ${romeAgentMessages.id}
+        )`,
+      })
+      .from(romeAgentMessages)
+      .where(and(eq(romeAgentMessages.role, "trace"), gte(romeAgentMessages.createdAt, since)));
+
+    let ended = 0;
+    for (const trace of traces) {
+      if (trace.lastStart === null || (trace.lastEnd !== null && trace.lastEnd > trace.lastStart)) {
+        continue;
+      }
+      const start = await this.db
+        .select({ content: romeAgentTraceBlocks.content })
+        .from(romeAgentTraceBlocks)
+        .where(
+          and(
+            eq(romeAgentTraceBlocks.messageId, trace.id),
+            eq(romeAgentTraceBlocks.seq, trace.lastStart),
+          ),
+        )
+        .get();
+      const turnStart = start
+        ? (JSON.parse(start.content) as { turnId?: string; agent?: string })
+        : {};
+      const agent = turnStart.agent ? { agent: turnStart.agent } : {};
+      await this.appendTraceBlocks({
+        messageId: trace.id,
+        sessionId: trace.sessionId,
+        turnId: trace.turnId,
+        startSeq: trace.lastSeq + 1,
+        blocks: [
+          { type: "error", error: INTERRUPTED_TURN_ERROR, ...agent },
+          {
+            type: "turn_end",
+            turnId: turnStart.turnId ?? trace.turnId,
+            status: "error",
+            // The turn's real duration is unknown; elapsed time would count the downtime.
+            durationMs: 0,
+            ...agent,
+          },
+        ],
+      });
+      ended += 1;
+    }
+    return ended;
   }
 
   async getUserInput(sessionId: string, inputId: string) {
