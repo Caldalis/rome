@@ -90,3 +90,14 @@ This narrows two earlier sentences. The decision above says "A service carries a
 ### Consequences
 
 Uniqueness rests on the registry, not the database. Within the one Rome process, the per-service mint lock holds it, and `connect` refuses a second Connection under that lock. The "future diffs must respect" rule on Connection uniqueness becomes: a Connection backs exactly one channel, and a channel's live ports are backed by one Connection.
+
+## Amendment (2026-10-16): an agent linked to a channel
+
+A channel can be linked to an agent, which answers in that channel's conversations ([Linked agents](../architecture/channels.md#linked-agents)). A channel with no linked agent is silent and does not fall back to main. Main is linked like any other agent. On one platform an agent other than main is linked to at most one channel. Main is exempt because it answers a platform's bot and its signed-in user at once, as it does on Telegram. Every backed channel of a linkable service is linked to main on upgrade, and a linkable service's first channel is linked to main when it is made, so existing and first bots keep answering.
+
+Rome stores each channel's platform as a fixed value mapped from its service ([`platform.ts`](../../packages/api-types/src/platform.ts)). Feishu and Lark are one platform, `telegram` and `telegram_user` are one, and `wechat` and `wechat_user` are one. Every other service is its own platform. The one-agent-per-platform rule counts by it. The 2026-10-08 amendment's "the platform is not a name Rome stores" is withdrawn. Its rule that nothing above the channels of one platform merges them stands.
+
+### Alternatives
+
+- **Let main answer wherever no agent is linked.** Rejected because a guardian who moves an agent to another account would leave the old one answering as main, which is not what moving it means. Linking main makes who answers explicit on every account.
+- **Parse the platform out of a channel id.** Rejected because a later channel's id is opaque, and `telegram_user` would need a parsing rule of its own. A fixed mapping from the service answers the question once.

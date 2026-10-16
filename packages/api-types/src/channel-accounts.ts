@@ -13,8 +13,8 @@ export interface ConnectionAccountFields {
    *  is named after it (`feishu`), and later ones get an opaque id. Null for
    *  placeholders and services without a Talk. */
   channel?: string | null;
-  /** Canonical id of the agent linked to this account (`sales:agent`), or null
-   *  when main answers. */
+  /** Canonical id of the agent linked to this account (`sales:agent`,
+   *  `core:main`), or null when none is, which leaves the account silent. */
   linkedAgent?: string | null;
   /** Whether the service offers "add another account". */
   severalAccounts?: boolean;
@@ -28,12 +28,12 @@ export interface ChannelAccount {
   platform: string;
   /** The Connection backing the account, or null once it was deleted. */
   connectionId: string | null;
-  /** Canonical id of the linked agent, or null when main answers. */
+  /** Canonical id of the linked agent, or null when the account is silent. */
   agent: string | null;
 }
 
 /** Body of `PUT /api/channels/accounts/:id/agent`. Null unlinks the account,
- *  so main answers there. */
+ *  which leaves it silent. */
 export interface LinkAccountAgentRequest {
   agent: string | null;
 }

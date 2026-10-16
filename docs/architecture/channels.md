@@ -38,6 +38,19 @@ App actions reach channels through one service, `deps.channelsService` ([`Channe
 - Admission and pairing stay in the channel's inbound port, which runs them once per message on the Connection it arrived through, whether or not anything subscribes yet ([`channels/admission.ts`](../../packages/core/src/channels/admission.ts)). An account directory stays on the Connection. The service adds no path around either.
 - A Connection's talker and its features (history, inbound media, typing, the directory, direct messaging) are internal to core ([`connections/types.ts`](../../packages/core/src/connections/types.ts)). Only the channel ports reach a talker, through `Connection.withTalker`, which also reports a rejected credential to the registry. No app receives them. An app reaches a channel through this service or a hook's `channels`.
 
+## Linked agents
+
+A channel can be linked to an [agent](../concepts/agents.md) ([ADR](../adrs/channels-and-connectors-are-one-connection.md#amendment-2026-10-16-an-agent-linked-to-a-channel)). `GET /api/channels/accounts` lists each channel with its linked agent, and `PUT /api/channels/accounts/:id/agent` links one or unlinks it with `null` ([`channel-accounts.ts`](../../packages/api-types/src/channel-accounts.ts)). Once answering by the linked agent lands, an unlinked channel is silent. Until then nothing answers as the linked agent, and main still answers every conversation.
+
+### Invariants
+
+- A channel has at most one linked agent, stored by its canonical id. Main is linked like any other agent, as `core:main`.
+- Only a channel of a Feishu, Telegram, or Discord bot, or of the signed-in Telegram user, can be linked ([`linked-agents.ts`](../../packages/api-types/src/linked-agents.ts)). A channel that carries Rome's own traffic, such as the Cloud `agents` channel, takes no link.
+- On one platform, an agent other than main is linked to at most one channel. Linking it to a second channel on that platform moves the link and leaves the first channel unlinked, in one transaction, and a partial unique index rejects any write that would leave it on two. Main is exempt: it answers a Telegram bot and the signed-in Telegram user at once.
+- A linkable service's first channel, the one carrying the service's name, is linked to main when a Connection comes to back it, so a guardian's first bot keeps answering. A later channel starts unlinked. On upgrade, every backed channel of a linkable service is linked to main.
+- A channel whose Connection is removed loses its link, and a channel no Connection backs cannot be linked.
+- People and [account pairing](#account-pairing) key an account by its service, not by its channel. An address on a service's second channel resolves to the same person as on its first when the platform gives that person one address across bots. Telegram and Discord do. Feishu does not: its sender id is issued per app, so a guardian is paired again on a second Feishu bot.
+
 ## Connection setup
 
 Every channel is connected through **one server-owned setup protocol** ([decision record](../adrs/server-owned-ceremonies-with-terminal-conferral.md)) — not a per-service connect flow. Per-service knowledge (which credentials a channel needs, how it probes them, what the guardian must do) lives in the integration descriptor the server drives. The client only pumps generic setup states and renders them.
