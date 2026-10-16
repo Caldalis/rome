@@ -380,6 +380,75 @@ describe("WebChatRepository", () => {
     await expect(repo.endInterruptedTurns(day)).resolves.toBe(0);
   });
 
+  it("fails the subagents an interrupted turn was still waiting on", async () => {
+    const call = (toolUseId: string, agentName: string) => ({
+      toolUseId,
+      agentName,
+      sessionId: `child-${toolUseId}`,
+      turnId: `child-turn-${toolUseId}`,
+    });
+    const started = (toolUseId: string, agentName: string) => ({
+      type: "subagent_start",
+      ...call(toolUseId, agentName),
+      input: { prompt: "Look it up" },
+      agent: "main",
+    });
+    await repo.createSession("sess-parent", "Parent");
+    await repo.appendTraceBlocks({
+      messageId: "trace-parent",
+      sessionId: "sess-parent",
+      turnId: "trace-parent",
+      startSeq: 0,
+      blocks: [
+        // A turn that already ended keeps what it recorded.
+        { type: "turn_start", turnId: "turn-1", agent: "main" },
+        started("tu-earlier", "assistant:explore"),
+        { type: "turn_end", turnId: "turn-1", status: "error", durationMs: 5 },
+        { type: "turn_start", turnId: "turn-2", agent: "main" },
+        started("tu-done", "assistant:explore"),
+        started("tu-explore", "assistant:explore"),
+        {
+          type: "subagent_result",
+          ...call("tu-done", "assistant:explore"),
+          status: "completed",
+          output: "notes",
+          agent: "main",
+        },
+        started("tu-assistant", "assistant:assistant"),
+      ],
+    });
+
+    const day = 24 * 60 * 60 * 1000;
+    await expect(repo.endInterruptedTurns(day)).resolves.toBe(1);
+
+    const blocks = async () =>
+      JSON.parse((await repo.getTraceContents("sess-parent"))[0]!.content) as Record<
+        string,
+        unknown
+      >[];
+    const failed = (toolUseId: string, agentName: string) => ({
+      type: "subagent_result",
+      ...call(toolUseId, agentName),
+      status: "failed",
+      error: { message: INTERRUPTED_TURN_ERROR },
+      agent: "main",
+    });
+    expect((await blocks()).slice(-4)).toEqual([
+      failed("tu-explore", "assistant:explore"),
+      failed("tu-assistant", "assistant:assistant"),
+      { type: "error", error: INTERRUPTED_TURN_ERROR, agent: "main" },
+      { type: "turn_end", turnId: "turn-2", status: "error", durationMs: 0, agent: "main" },
+    ]);
+
+    await expect(repo.endInterruptedTurns(day)).resolves.toBe(0);
+    const results = (await blocks()).filter((block) => block.type === "subagent_result");
+    expect(results.map((block) => block.toolUseId)).toEqual([
+      "tu-done",
+      "tu-explore",
+      "tu-assistant",
+    ]);
+  });
+
   it("lists sessions with message counts and project names", async () => {
     await repo.createSession("sess-1", "Chat A", "guardian-1");
     await repo.createSession("sess-2", "Chat B");
