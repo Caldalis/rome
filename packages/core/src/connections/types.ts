@@ -307,6 +307,12 @@ export interface ConnectionDescriptor {
   /** Grant-state-driven custody of out-of-process artifacts (token files, shell
    *  auth). Omitted by services with no such artifact — most descriptors. */
   custody?: GrantCustody;
+  /** True when the guardian can add another account of this service, each
+   *  with its own Connection and channel. A service that keeps its stores or
+   *  adapter state under one channel, or is a single presence by nature
+   *  (webchat, email), leaves it unset. Vocabulary:
+   *  docs/concepts/messaging.md#channels. */
+  severalAccounts?: boolean;
   capabilities: Partial<{
     talker: {
       needs: readonly GrantName[];

@@ -15,10 +15,12 @@ import { ChannelMessageHook, createHook, MissingChannelsError } from "./index.js
 const TELEGRAM_ID = "connection:telegram";
 const WHATSAPP_ID = "connection:whatsapp";
 const AGENTS_ID = "connection:agents";
+const FEISHU_2_ID = "connection:feishu-2";
 const SERVICES: Record<string, string> = {
   [TELEGRAM_ID]: "telegram",
   [WHATSAPP_ID]: "whatsapp",
   [AGENTS_ID]: "agents",
+  [FEISHU_2_ID]: "feishu",
 };
 
 // What a channel's port reads for activity and inbound media, per Connection.
@@ -90,6 +92,7 @@ function createHarness(options: ConstructorParameters<typeof ChannelMessageHook>
   const feature = <K extends keyof ChannelFeatures>(connectionId: string, name: K) =>
     (features.get(connectionId)?.[name] ?? null) as ChannelFeatures[K] | null;
   // One channel per Connection, as the channel list builds them.
+  const subscribes = rs.fn((_name: string) => undefined);
   const channel = (name: string, connectionId: string): Channel => ({
     name,
     send: {
@@ -100,6 +103,7 @@ function createHarness(options: ConstructorParameters<typeof ChannelMessageHook>
     },
     inbound: {
       subscribe: (handler) => {
+        subscribes(name);
         handlers.set(connectionId, handler);
         return () => handlers.delete(connectionId);
       },
@@ -108,7 +112,7 @@ function createHarness(options: ConstructorParameters<typeof ChannelMessageHook>
       },
     },
   });
-  const channels = [
+  const channels: Channel[] = [
     channel("telegram", TELEGRAM_ID),
     channel("whatsapp", WHATSAPP_ID),
     channel("agents", AGENTS_ID),
@@ -141,7 +145,7 @@ function createHarness(options: ConstructorParameters<typeof ChannelMessageHook>
     return handled;
   };
 
-  return { hook, run, get, features, emit, stop, send };
+  return { hook, run, get, features, emit, stop, send, channels, channel, subscribes };
 }
 
 describe("ChannelMessageHook", () => {
@@ -407,6 +411,37 @@ describe("ChannelMessageHook", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(warn).toHaveBeenCalledTimes(1);
   });
+  it("subscribes to channels the host adds, once each", async () => {
+    expect(harness.subscribes.mock.calls.map(([name]) => name)).toEqual([
+      "telegram",
+      "whatsapp",
+      "agents",
+    ]);
+
+    const added = harness.channel("feishu-2", FEISHU_2_ID);
+    harness.channels.push(added);
+    await harness.hook.addChannels([added]);
+    await harness.hook.register();
+
+    expect(harness.subscribes.mock.calls.map(([name]) => name)).toEqual([
+      "telegram",
+      "whatsapp",
+      "agents",
+      "feishu-2",
+    ]);
+    await harness.emit(FEISHU_2_ID, message({ channel: "feishu-2" }));
+    expect(harness.run).toHaveBeenCalledWith(
+      "message_handler",
+      expect.objectContaining({ connectionId: FEISHU_2_ID, channel: "feishu-2" }),
+      expect.anything(),
+    );
+
+    harness.hook.unregister();
+    await expect(harness.emit(FEISHU_2_ID, message())).rejects.toThrow("no subscription");
+    await harness.hook.register();
+    expect(harness.subscribes).toHaveBeenCalledTimes(8);
+  });
+
   it("refuses, by name, a host that passes no channels", () => {
     expect(() =>
       createHook({

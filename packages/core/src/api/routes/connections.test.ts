@@ -20,6 +20,7 @@ import {
 } from "../../connections/test-fixtures.js";
 import type { Credential, ProfileRecord } from "../../connections/types.js";
 import { ApprovalsRepository } from "../../db/repositories/approvals.js";
+import { ChannelRecordsRepository } from "../../db/repositories/channel-records.js";
 import { PersonMappingRepository } from "../../db/repositories/person-mapping.js";
 import { createTestDb, identityServiceOf } from "../../test/helpers.js";
 import type { ApiDeps } from "../deps.js";
@@ -121,6 +122,8 @@ describe("GET /connections", () => {
       },
       connect: null,
       setups: {},
+      channel: null,
+      severalAccounts: false,
     });
 
     // Nothing conferred on discord yet: both grants unauthorized, everything
@@ -213,6 +216,8 @@ describe("GET /connections", () => {
       },
       connect: null,
       setups: {},
+      channel: null,
+      severalAccounts: false,
     });
   });
 
@@ -415,6 +420,142 @@ describe("DELETE /connections/:id/grants/:name", () => {
     });
     expect(res.status).toBe(403);
     expect(registry.get(conn.id).auth.grants().user).toBe("authorized");
+  });
+});
+
+describe("POST /connections", () => {
+  const telegram = makePasteTalk();
+  function telegramRegistry(): ConnectionRegistry {
+    const registry = new ConnectionRegistry({ ledger: makeLedger() });
+    registry.register({ ...telegram.descriptor, service: "telegram", severalAccounts: true });
+    return registry;
+  }
+  const addAccount = (registry: ConnectionRegistry) =>
+    makeApp(registry).request("/connections", {
+      method: "POST",
+      headers: { ...SAME_ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ service: "telegram" }),
+    });
+
+  it("mints another Connection of a service that offers several accounts", async () => {
+    const registry = telegramRegistry();
+    const first = await registry.connect("telegram");
+    await registry.importCredential(first.id, "bot", telegram.validCredential());
+
+    const res = await addAccount(registry);
+
+    expect(res.status).toBe(201);
+    const { connection } = await res.json();
+    expect(connection).toMatchObject({ service: "telegram", severalAccounts: true });
+    expect(connection.id).not.toBe(first.id);
+    expect(registry.find("telegram")).toHaveLength(2);
+  });
+
+  it("reports each account's channel: the service name first, an opaque id after", async () => {
+    const { db, close } = createTestDb();
+    openDbs.push(close);
+    const records = new ChannelRecordsRepository(db);
+    const registry = new ConnectionRegistry({
+      ledger: new DrizzleGrantLedger(db),
+      onMint: (tx, record) => {
+        records.claim(tx, record, record.createdAt);
+      },
+    });
+    registry.register({ ...telegram.descriptor, service: "telegram", severalAccounts: true });
+    const first = await registry.connect("telegram");
+    await registry.importCredential(first.id, "bot", telegram.validCredential());
+    const app = makeApp(registry, undefined, { db });
+
+    const added = await app.request("/connections", {
+      method: "POST",
+      headers: { ...SAME_ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ service: "telegram" }),
+    });
+    const { connection } = await added.json();
+    const { connections } = await (await app.request("/connections")).json();
+
+    const channelOf = (id: string) =>
+      connections.find((each: { id: string }) => each.id === id)?.channel;
+    expect(channelOf(first.id)).toBe("telegram");
+    expect(channelOf(connection.id)).toBe(records.idOf(connection.id));
+    expect(channelOf(connection.id)).not.toBe("telegram");
+  });
+
+  it("hands back an account whose setup never finished instead of minting", async () => {
+    const registry = telegramRegistry();
+    const first = await registry.connect("telegram");
+    await registry.importCredential(first.id, "bot", telegram.validCredential());
+    const added = await (await addAccount(registry)).json();
+
+    const res = await addAccount(registry);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).connection.id).toBe(added.connection.id);
+    expect(registry.find("telegram")).toHaveLength(2);
+  });
+
+  it("mints rather than hand back an account whose bot was disconnected", async () => {
+    const registry = telegramRegistry();
+    const first = await registry.connect("telegram");
+    await registry.importCredential(first.id, "bot", telegram.validCredential());
+    await registry.revoke(first.id, "bot");
+
+    const res = await addAccount(registry);
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).connection.id).not.toBe(first.id);
+  });
+
+  it("gives two overlapping requests the same new account", async () => {
+    const registry = telegramRegistry();
+    const first = await registry.connect("telegram");
+    await registry.importCredential(first.id, "bot", telegram.validCredential());
+
+    const [a, b] = await Promise.all([addAccount(registry), addAccount(registry)]);
+
+    const ids = [(await a.json()).connection.id, (await b.json()).connection.id];
+    expect(ids[0]).toBe(ids[1]);
+    expect(registry.find("telegram")).toHaveLength(2);
+  });
+
+  it("refuses a service that offers one account", async () => {
+    const registry = new ConnectionRegistry({ ledger: makeLedger() });
+    registry.register(makePasteTalk().descriptor);
+
+    const res = await makeApp(registry).request("/connections", {
+      method: "POST",
+      headers: { ...SAME_ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ service: "fake-telegram" }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(registry.find("fake-telegram")).toEqual([]);
+  });
+
+  it("refuses a null body", async () => {
+    const registry = telegramRegistry();
+
+    const res = await makeApp(registry).request("/connections", {
+      method: "POST",
+      headers: { ...SAME_ORIGIN, "content-type": "application/json" },
+      body: "null",
+    });
+
+    expect(res.status).toBe(400);
+    expect(registry.find("telegram")).toEqual([]);
+  });
+
+  it("rejects cross-site requests without minting", async () => {
+    const registry = telegramRegistry();
+
+    const res = await makeApp(registry).request("/connections", {
+      method: "POST",
+      headers: { "sec-fetch-site": "cross-site", "content-type": "application/json" },
+      body: JSON.stringify({ service: "telegram" }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(registry.find("telegram")).toEqual([]);
   });
 });
 

@@ -5,10 +5,11 @@
  * taking an entry here. Vocabulary: docs/concepts/messaging.md.
  */
 
+import type { Connection } from "../connections/types.js";
 import type { DrizzleDb } from "../db/index.js";
 import type { Accounts } from "./accounts.js";
 import type { Channel, Channels } from "./channel.js";
-import { connectionPorts, type ConnectionPortsDeps } from "./connection-ports.js";
+import { type ChannelOf, connectionPorts, type ConnectionPortsDeps } from "./connection-ports.js";
 import { linkedInMessages } from "./linkedin-messages.js";
 import type { WechatUserReader } from "./wechat-user.js";
 import {
@@ -116,4 +117,25 @@ export function laterChannel(
   const backed = connectionPorts(connections, service, name);
   if (!backed || (!backed.send && !backed.inbound && !backed.messages)) return null;
   return { name, accounts: null, ...backed };
+}
+
+/**
+ * The channel a Connection backs, added to `channels` when its Talk unlocks
+ * and none of them is that channel yet. Null when one already is, or when the
+ * service has no Talk, or the Connection backs no channel.
+ *
+ * Call it from the registry's `onUnlocked("talk")`. The new channel's inbound
+ * port registers its own unlock handler while that one is still firing, so the
+ * registry hands it this Connection twice. The port keeps one subscription per
+ * Connection, so each message still arrives once.
+ */
+export function joinLaterChannel(
+  deps: ConnectionPortsDeps & { channelOf: ChannelOf; channels: Channel[] },
+  connection: Pick<Connection, "id" | "service">,
+): Channel | null {
+  const name = deps.channelOf(connection);
+  if (name === null || deps.channels.some((channel) => channel.name === name)) return null;
+  const channel = laterChannel(deps, connection.service, name);
+  if (channel) deps.channels.push(channel);
+  return channel;
 }

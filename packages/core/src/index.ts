@@ -78,7 +78,7 @@ import { LinkedInAccounts } from "./channels/linkedin-accounts.js";
 import { WhatsAppAccounts } from "./channels/whatsapp-accounts.js";
 import { createAccountNames } from "./channels/account-names.js";
 import { agentsAccounts, externalAgents } from "./channels/agents-accounts.js";
-import { channelList } from "./channels/channel-list.js";
+import { channelList, joinLaterChannel } from "./channels/channel-list.js";
 import { claimChannels } from "./channels/claim-channels.js";
 import { recordedChannelOf } from "./channels/connection-ports.js";
 import { ChannelRecordsRepository } from "./db/repositories/channel-records.js";
@@ -1218,7 +1218,9 @@ async function main() {
     }
   }
   // The hook subscribes to every channel that can receive, and a channel's
-  // subscription follows whatever backs it, so no unlock needs the hook again.
+  // subscription follows whatever backs it. Only a channel added later, when a
+  // new account first unlocks Talk, reaches the hook again, through
+  // `addChannels`.
   await messageHook.register();
   // App-keys refreshes recreate this hook: it is instantiated once and held by
   // the channels' subscriptions, so an env value captured in its module graph
@@ -1236,6 +1238,50 @@ async function main() {
         onSkip: (reason) => log.warn(reason),
       })
     : null;
+
+  // A later channel minted at runtime (a second Feishu bot) joins the channel
+  // list when its Connection first unlocks Talk, before its stream starts, and
+  // a hook that takes added channels subscribes to it.
+  connectionRegistry.onUnlocked("talk", (connection) => {
+    const channel = joinLaterChannel(
+      { registry: connectionRegistry, admit, channelOf, channels },
+      connection,
+    );
+    if (!channel) return;
+    const added = withInboundSpans([channel], "channel-message");
+    hookChannels.push(...added);
+    const hook = messageHook;
+    // A hook without `addChannels` re-registers, as the app-keys reloader
+    // does, and its register() reads the grown channel list. Events waiting
+    // on its other subscriptions are dropped, which beats never hearing the
+    // new account until the next reload. A hook that cannot unregister is
+    // left alone, as the reloader leaves it, since registering it again would
+    // double its existing subscriptions.
+    const subscribe = hook.addChannels
+      ? () => hook.addChannels?.(added)
+      : hook.unregister
+        ? () => {
+            hook.unregister?.();
+            return hook.register();
+          }
+        : () =>
+            log.warn("channel-message hook can neither add channels nor unregister", {
+              channel: channel.name,
+            });
+    // Subscribe before the new talker starts. A hook built outside this repo
+    // may throw synchronously or return no promise.
+    const failed = (error: unknown) => {
+      log.error("channel-message hook did not subscribe to a later channel", {
+        channel: channel.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    try {
+      Promise.resolve(subscribe()).catch(failed);
+    } catch (error) {
+      failed(error);
+    }
+  });
 
   // Hydrate connection/grant state without starting provider transports, so
   // the zero-grant connections exist before any Talk epoch can admit messages.

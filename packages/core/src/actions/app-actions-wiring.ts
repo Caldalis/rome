@@ -59,6 +59,7 @@ export function assertNoAppActionLoadFailures(
 export function createNoopChannelMessageHook(): ChannelMessageHook {
   return {
     async register() {},
+    async addChannels() {},
     unregister() {},
   };
 }

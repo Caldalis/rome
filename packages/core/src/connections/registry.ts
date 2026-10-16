@@ -292,6 +292,25 @@ export class ConnectionRegistry {
     return this.connectionMutex.runExclusive(service, () => this.mint(service, label));
   }
 
+  /** Hand back a Connection of `service` that no conferral has ever filled, or
+   *  mint another when there is none. The lookup and the mint share the
+   *  service's mint lock, so two overlapping calls get the same Connection.
+   *  A Connection whose grant was revoked keeps its channel and is not handed
+   *  back, since it was an account the guardian used. */
+  async connectUnusedOrAnother(
+    service: string,
+  ): Promise<{ connection: Connection; minted: boolean }> {
+    return this.connectionMutex.runExclusive(service, async () => {
+      for (const existing of this.find(service)) {
+        const grants = await this.ledger.listGrants(existing.id);
+        if (grants.length > 0 && grants.every((grant) => grant.conferredAt === undefined)) {
+          return { connection: existing, minted: false };
+        }
+      }
+      return { connection: await this.mint(service, undefined), minted: true };
+    });
+  }
+
   private async mint(service: string, label: string | undefined): Promise<Connection> {
     const registered = this.descriptors.get(service);
     if (!registered) throw new Error(`no registered descriptor for service "${service}"`);

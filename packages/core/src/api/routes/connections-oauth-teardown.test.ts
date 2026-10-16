@@ -41,7 +41,7 @@ rs.mock("../../lib/oauth-providers.js", () => ({
   isEnabledOAuthProvider: () => true,
 }));
 
-import { createTestDb } from "../../test/helpers.js";
+import { createTestDb, type TestDb } from "../../test/helpers.js";
 import { DrizzleGrantLedger } from "../../connections/ledger-db.js";
 import { ConnectionRegistry } from "../../connections/registry.js";
 import { importProviderBundle } from "../../connections/providers-import.js";
@@ -51,10 +51,14 @@ import { connectionsRoutes } from "./connections.js";
 
 // A fresh drizzle-backed ledger per test; opened DBs are closed after each test.
 const openDbs: Array<() => void> = [];
-function makeLedger(): DrizzleGrantLedger {
+function openDb(): TestDb["db"] {
   const { db, close } = createTestDb();
   openDbs.push(close);
-  return new DrizzleGrantLedger(db);
+  return db;
+}
+
+function makeLedger(): DrizzleGrantLedger {
+  return new DrizzleGrantLedger(openDb());
 }
 
 /** A registry with all three providers registered and `provider` authorized. */
@@ -101,7 +105,7 @@ describe("OAuth teardown via /connections DELETE routes", () => {
     clearGithubShellIntegrationForProvider.mockClear();
 
     const res = await request(
-      { db: {}, connectionRegistry: registry } as unknown as ApiDeps,
+      { db: openDb(), connectionRegistry: registry } as unknown as ApiDeps,
       `/connections/${conn.id}/grants/${grant}`,
     );
 
@@ -118,7 +122,7 @@ describe("OAuth teardown via /connections DELETE routes", () => {
     const conn = registry.find("github")[0];
 
     const res = await request(
-      { db: {}, connectionRegistry: registry } as unknown as ApiDeps,
+      { db: openDb(), connectionRegistry: registry } as unknown as ApiDeps,
       `/connections/${conn.id}`,
     );
 
@@ -132,7 +136,7 @@ describe("OAuth teardown via /connections DELETE routes", () => {
     const conn = registry.find("github")[0];
 
     const res = await request(
-      { db: {}, connectionRegistry: registry } as unknown as ApiDeps,
+      { db: openDb(), connectionRegistry: registry } as unknown as ApiDeps,
       `/connections/${conn.id}/grants/user`,
     );
 

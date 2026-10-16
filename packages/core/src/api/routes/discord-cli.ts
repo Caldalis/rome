@@ -104,7 +104,11 @@ async function execute(
   const startedAt = Date.now();
   let discordStatus: number | undefined;
   try {
-    const act = deps.connectionRegistry?.find("discord")[0]?.act;
+    // The CLI acts as the first bot that can act, so an unfinished account
+    // never hides a live one. Discord offers one bot until the request names
+    // the Connection a turn arrived on.
+    const bots = deps.connectionRegistry?.find("discord") ?? [];
+    const act = (bots.find((bot) => bot.isUnlocked("act")) ?? bots[0])?.act;
     if (!act || !act.operations().some((operation) => operation.name === "discord.api.request")) {
       return unavailableDiscordAuth(deps);
     }

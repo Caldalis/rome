@@ -232,6 +232,9 @@ export function makeDiscordDescriptor(deps: DiscordDeps): ConnectionDescriptor {
 
   return {
     service: "discord",
+    // One bot until the Discord CLI acts as the bot a turn arrived on: its
+    // request names no Connection, so a second bot's turns would act as the
+    // first.
     reviveProfile: (_grant, record) => reviveDiscordProfile(record),
     auth: {
       bot: botScheme,

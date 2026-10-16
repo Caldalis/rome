@@ -28,7 +28,6 @@
     "./linked-agents": "./src/linked-agents.ts",
     "./people": "./src/people.ts",
     "./platform": "./src/platform.ts",
-    "./several-accounts": "./src/several-accounts.ts",
     "./persons": "./src/persons.ts",
     "./devices": "./src/devices.ts",
     "./node-console": "./src/node-console.ts",

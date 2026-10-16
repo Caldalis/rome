@@ -25,7 +25,8 @@ const AGENTS_CHANNEL = "agents";
 export const SLOW_TURN_MS = 10 * 60_000;
 
 export class ChannelMessageHook implements ChannelMessageHookInterface {
-  private readonly subscriptions: Array<() => void> = [];
+  /** Unsubscribe functions by channel name, one per channel this hook holds. */
+  private readonly subscriptions = new Map<string, () => void>();
 
   constructor(
     private readonly actionEngine: ActionEngineLike,
@@ -35,15 +36,29 @@ export class ChannelMessageHook implements ChannelMessageHookInterface {
     private readonly options: { slowTurnMs?: number; log?: Pick<typeof log, "warn"> } = {},
   ) {}
 
-  /** Subscribe once to every channel that can receive. A channel's
-   *  subscription follows whatever backs it, so a Connection that appears or
-   *  reconnects later needs nothing more from the hook. */
+  /** Subscribe to every channel that can receive. A channel's subscription
+   *  follows whatever backs it, so a Connection that appears or reconnects
+   *  later needs nothing more from the hook. */
   async register(): Promise<void> {
-    if (this.subscriptions.length > 0) return;
-    for (const channel of this.channels) {
+    this.subscribe(this.channels);
+  }
+
+  /** Subscribe to channels the host added after `register`, such as a second
+   *  bot whose Talk first unlocked. */
+  async addChannels(channels: readonly Channel[]): Promise<void> {
+    this.subscribe(channels);
+  }
+
+  /** Subscribe to each channel that can receive and that this hook does not
+   *  hold yet, so no channel is ever subscribed twice. */
+  private subscribe(channels: readonly Channel[]): void {
+    for (const channel of channels) {
       const inbound = channel.inbound;
-      if (!inbound) continue;
-      this.subscriptions.push(inbound.subscribe((event) => this.handleMessage(channel, event)));
+      if (!inbound || this.subscriptions.has(channel.name)) continue;
+      this.subscriptions.set(
+        channel.name,
+        inbound.subscribe((event) => this.handleMessage(channel, event)),
+      );
     }
   }
 
@@ -51,7 +66,9 @@ export class ChannelMessageHook implements ChannelMessageHookInterface {
    *  channel; a turn already running finishes, and the agent session queues
    *  the successor hook's turns for that conversation behind it. */
   unregister(): void {
-    for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
+    const unsubscribes = [...this.subscriptions.values()];
+    this.subscriptions.clear();
+    for (const unsubscribe of unsubscribes) unsubscribe();
   }
 
   /**
@@ -118,8 +135,7 @@ export class ChannelMessageHook implements ChannelMessageHookInterface {
     }
 
     let attachments = message.attachments;
-    // Through the service's Connection, which is `ref`'s: a service holds at
-    // most one Connection.
+    // Through the channel's Connection, which is `ref`'s.
     const inboundMedia = channel.inbound?.media ?? null;
     if (inboundMedia && attachments.length > 0) {
       try {
@@ -229,8 +245,7 @@ export class ChannelMessageHook implements ChannelMessageHookInterface {
   }
 
   /** Answer in a conversation on the channel it arrived on, where it can send.
-   *  The channel sends through its service's Connection, not `ref`'s: a
-   *  service holds at most one Connection, so they are the same one. */
+   *  The channel sends through the Connection backing it, which is `ref`'s. */
   private async reply(
     channel: Channel,
     conversationId: ConversationId,

@@ -1,5 +1,3 @@
-import { SEVERAL_ACCOUNT_SERVICES } from "./several-accounts.js";
-
 /**
  * The services whose channels can be linked to an agent: the bots a guardian
  * adds to chats on behalf of an agent, and the signed-in Telegram user. A
@@ -9,6 +7,8 @@ import { SEVERAL_ACCOUNT_SERVICES } from "./several-accounts.js";
  * docs/concepts/messaging.md#channels.
  */
 export const LINKABLE_SERVICES: ReadonlySet<string> = new Set([
-  ...SEVERAL_ACCOUNT_SERVICES,
+  "feishu",
+  "telegram",
+  "discord",
   "telegram_user",
 ]);

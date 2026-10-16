@@ -1911,6 +1911,8 @@ export interface ChannelMessageHookDeps {
   actionEngine: ActionEngineLike;
   conversationSettings: ConversationSettingsControl;
   chatStop: ChatStopHandler;
+  /** A live array: the host appends a channel added later, such as a second
+   *  bot, in place. Read it at each `register()` rather than keep a copy. */
   channels: readonly Channel[];
 }
 
@@ -1921,6 +1923,14 @@ export interface ChannelMessageHook {
    *  subscription follows whatever backs it, so the host never calls the hook
    *  per Connection. */
   register(): Promise<void>;
+  /** Subscribe to `channels`, which the host has just appended to the deps'
+   *  `channels`, such as a second bot whose Talk first unlocked. The host
+   *  calls it only on a hook that defines it. On a hook without it, the host
+   *  calls `unregister()` then `register()` at once, which drops events still
+   *  waiting on the hook's existing subscriptions. A hook with neither
+   *  `addChannels` nor `unregister()` hears those channels only after the
+   *  next restart. */
+  addChannels?(channels: readonly Channel[]): Promise<void>;
   /** Detach every subscription `register` took out, so
    * the host can swap in a replacement instance (e.g. after an app-keys
    * environment change) without double-handling inbound messages. A hook

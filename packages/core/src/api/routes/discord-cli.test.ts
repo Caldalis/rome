@@ -28,6 +28,7 @@ function appWith(
                   ? [
                       {
                         id: "discord-1",
+                        isUnlocked: (capability: string) => capability === "act" && !!execute,
                         auth: {
                           grants: () => ({ bot: opts.botGrantState ?? "unauthorized" }),
                         },
