@@ -802,6 +802,7 @@ async function main() {
           .talker;
         return talker ? talkerChannelSurface(talker) : null;
       },
+      serviceOfChannel,
     },
     { keepAliveAcrossTurns: true, idleTtlMs: 15_000 },
   );
