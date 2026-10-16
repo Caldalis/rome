@@ -6,6 +6,7 @@ import {
   count,
   desc,
   eq,
+  gt,
   gte,
   inArray,
   isNotNull,
@@ -33,7 +34,11 @@ import {
   withSessionKind,
 } from "../session-kind.js";
 import { DEFAULT_WEBCHAT_PROJECT_NAME } from "../../webchat/constants.js";
-import type { TurnFeedbackRating } from "@rome/api-types/trace-segments";
+import type {
+  TraceSubagentResultEvent,
+  TraceSubagentStartEvent,
+  TurnFeedbackRating,
+} from "@rome/api-types/trace-segments";
 import type { RomeSessionType } from "@rome-os/app-runtime";
 import type { MessagePart } from "../../types.js";
 import { isCoreMainAgentId } from "../../apps/artifact-id.js";
@@ -1815,6 +1820,9 @@ export class WebChatRepository {
    * `turn_end`, so the turn would look unfinished forever. Each trace started
    * within `windowMs` of the newest trace whose last `turn_start` has no later
    * `turn_end` gets an `error` block and a `turn_end` with status `error`.
+   * Before them, each `subagent_start` in that turn with no `subagent_result`
+   * gets a `subagent_result` with status `failed` and the same error, since no
+   * process is left to finish that subagent.
    * Counting from the newest trace, not from now, keeps the stopped process's
    * turns in range however long Rome was down. Older traces stay as they are.
    * Returns how many turns it ended.
@@ -1867,12 +1875,44 @@ export class WebChatRepository {
         ? (JSON.parse(start.content) as { turnId?: string; agent?: string })
         : {};
       const agent = turnStart.agent ? { agent: turnStart.agent } : {};
+      const delegations = await this.db
+        .select({ content: romeAgentTraceBlocks.content })
+        .from(romeAgentTraceBlocks)
+        .where(
+          and(
+            eq(romeAgentTraceBlocks.messageId, trace.id),
+            gt(romeAgentTraceBlocks.seq, trace.lastStart),
+            inArray(sql`json_extract(${romeAgentTraceBlocks.content}, '$.type')`, [
+              "subagent_start",
+              "subagent_result",
+            ]),
+          ),
+        )
+        .orderBy(asc(romeAgentTraceBlocks.seq));
+      const running = new Map<string, TraceSubagentStartEvent>();
+      for (const row of delegations) {
+        const block = JSON.parse(row.content) as TraceSubagentStartEvent | TraceSubagentResultEvent;
+        if (block.type === "subagent_start") running.set(block.toolUseId, block);
+        else running.delete(block.toolUseId);
+      }
+      // No `endedAt`: the subagent's real end is unknown, and now would count the downtime.
+      const subagentEnds: TraceSubagentResultEvent[] = [...running.values()].map((call) => ({
+        type: "subagent_result",
+        toolUseId: call.toolUseId,
+        agentName: call.agentName,
+        sessionId: call.sessionId,
+        turnId: call.turnId,
+        status: "failed",
+        error: { message: INTERRUPTED_TURN_ERROR },
+        ...(call.agent ? { agent: call.agent } : {}),
+      }));
       await this.appendTraceBlocks({
         messageId: trace.id,
         sessionId: trace.sessionId,
         turnId: trace.turnId,
         startSeq: trace.lastSeq + 1,
         blocks: [
+          ...subagentEnds,
           { type: "error", error: INTERRUPTED_TURN_ERROR, ...agent },
           {
             type: "turn_end",
