@@ -370,6 +370,7 @@
         "inline": "Inline"
       },
       "mainAgent": "main (default)",
+      "linkedAgent": "{{agent}} (linked agent)",
       "silentAccount": "The agent linked to this account answers here.",
       "silentAccountLink": "<account>Link one on the account</account>.",
       "silentAccountOverride": "This conversation's choice, {{agent}}, applies once one is linked.",
