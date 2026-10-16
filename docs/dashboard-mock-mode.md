@@ -65,7 +65,7 @@ The seeded chats carry populated transcripts. Four showcase conversations cover 
 
 YouTube Distill, Code Review, Issue Triage, Fitness Tracker, and Stock Daily load recorded frontend bundles through the normal app host. Their API fixtures live in `mock/fixtures/` and `mock/handlers/recorded-apps.ts`.
 The bundles live in `mock/public/recorded-apps/` and ship only with the mock build.
-The Apps catalog includes only these five recordings, alongside the dashboard's built-in navigation entries.
+The Apps catalog lists these five recordings as App Store installs. It also lists every first-party app a fresh instance installs at boot, from `mock/handlers/first-party-apps.ts`. That set is each `rome_apps/<id>/` with an `app.yaml`, the same set `pnpm build:apps` packs. Their cards and icons come from each app's manifest and icon file. Their capability lists and READMEs are empty, and opening one needs the real backend.
 
 The September 15, 2026 sample contains:
 
