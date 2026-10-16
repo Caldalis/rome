@@ -12,7 +12,12 @@ import { afterEach, describe, expect, it, rs } from "@rstest/core";
 import { DrizzleGrantLedger } from "../../connections/ledger-db.js";
 import { ConnectionRegistry } from "../../connections/registry.js";
 import { tokenPaste } from "../../connections/schemes.js";
-import { makeGatedWatch, makePasteTalk, makeTwoGrant } from "../../connections/test-fixtures.js";
+import {
+  makeGatedWatch,
+  makePasteTalk,
+  makeTwoGrant,
+  makeZeroGrantTalk,
+} from "../../connections/test-fixtures.js";
 import type { Credential, ProfileRecord } from "../../connections/types.js";
 import { ApprovalsRepository } from "../../db/repositories/approvals.js";
 import { PersonMappingRepository } from "../../db/repositories/person-mapping.js";
@@ -493,6 +498,101 @@ describe("DELETE /connections/:id", () => {
     });
     expect(crossSite.status).toBe(403);
     expect(registry.all()).toHaveLength(1);
+  });
+});
+
+describe("guardian links across Connections of one service", () => {
+  async function twoBots() {
+    const { db, close } = createTestDb();
+    openDbs.push(close);
+    const registry = new ConnectionRegistry({ ledger: new DrizzleGrantLedger(db) });
+    const fixture = makePasteTalk();
+    fixture.descriptor.service = "telegram";
+    registry.register(fixture.descriptor);
+    const first = await registry.connect("telegram");
+    const second = await registry.connectAnother("telegram");
+    await registry.importCredential(first.id, "bot", fixture.validCredential());
+    await registry.importCredential(second.id, "bot", fixture.validCredential());
+    const personMappingRepo = new PersonMappingRepository(db);
+    await personMappingRepo.create({
+      displayName: "Guardian",
+      bondLevel: "guardian",
+      channelMappings: [{ channel: "telegram", channelUserId: "guardian" }],
+    });
+    const app = makeApp(registry, personMappingRepo, {
+      db,
+      approvalsRepo: new ApprovalsRepository(db),
+    });
+    const del = (path: string) => app.request(path, { method: "DELETE", headers: SAME_ORIGIN });
+    return { registry, personMappingRepo, first, second, del };
+  }
+
+  it("keeps the guardian link when one of two bots is removed", async () => {
+    const { personMappingRepo, first, del } = await twoBots();
+
+    expect((await del(`/connections/${first.id}`)).status).toBe(200);
+    expect(await personMappingRepo.findByChannelUser("telegram", "guardian")).not.toBeNull();
+  });
+
+  it("keeps the guardian link when one of two bots loses Talk", async () => {
+    const { personMappingRepo, first, del } = await twoBots();
+
+    expect((await del(`/connections/${first.id}/grants/bot`)).status).toBe(200);
+    expect(await personMappingRepo.findByChannelUser("telegram", "guardian")).not.toBeNull();
+  });
+
+  it("keeps the guardian link while the other bot's Talk is only degraded", async () => {
+    const { registry, personMappingRepo, first, second, del } = await twoBots();
+    await registry.getLedger().updateGrant(second.id, "bot", {
+      state: "degraded",
+      degraded: { at: new Date(0), reason: "renewal rejected" },
+    });
+
+    expect((await del(`/connections/${first.id}`)).status).toBe(200);
+    expect(await personMappingRepo.findByChannelUser("telegram", "guardian")).not.toBeNull();
+  });
+
+  it("keeps the guardian link when one of two Connections whose Talk needs no grant is removed", async () => {
+    const { db, close } = createTestDb();
+    openDbs.push(close);
+    const registry = new ConnectionRegistry({ ledger: new DrizzleGrantLedger(db) });
+    registry.register(makeZeroGrantTalk().descriptor);
+    const first = await registry.connect("fake-webchat");
+    await registry.connectAnother("fake-webchat");
+    const personMappingRepo = new PersonMappingRepository(db);
+    await personMappingRepo.create({
+      displayName: "Guardian",
+      bondLevel: "guardian",
+      channelMappings: [{ channel: "fake-webchat", channelUserId: "guardian" }],
+    });
+    const app = makeApp(registry, personMappingRepo, {
+      db,
+      approvalsRepo: new ApprovalsRepository(db),
+    });
+
+    const removed = await app.request(`/connections/${first.id}`, {
+      method: "DELETE",
+      headers: SAME_ORIGIN,
+    });
+    expect(removed.status).toBe(200);
+    expect(await personMappingRepo.findByChannelUser("fake-webchat", "guardian")).not.toBeNull();
+  });
+
+  it("deletes the guardian link when the last bot is removed", async () => {
+    const { personMappingRepo, first, second, del } = await twoBots();
+
+    expect((await del(`/connections/${first.id}`)).status).toBe(200);
+    expect((await del(`/connections/${second.id}`)).status).toBe(200);
+    expect(await personMappingRepo.findByChannelUser("telegram", "guardian")).toBeNull();
+  });
+
+  it("deletes the guardian link when the other bot no longer has Talk", async () => {
+    const { personMappingRepo, first, second, del } = await twoBots();
+
+    expect((await del(`/connections/${second.id}/grants/bot`)).status).toBe(200);
+    expect(await personMappingRepo.findByChannelUser("telegram", "guardian")).not.toBeNull();
+    expect((await del(`/connections/${first.id}`)).status).toBe(200);
+    expect(await personMappingRepo.findByChannelUser("telegram", "guardian")).toBeNull();
   });
 });
 
