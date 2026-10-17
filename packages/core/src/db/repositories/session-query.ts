@@ -17,6 +17,7 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { RunOutcome, SessionsSort } from "@rome/api-types/sessions";
+import { isCoreMainAgentId } from "../../apps/artifact-id.js";
 import type { DrizzleDb } from "../index.js";
 import { romeAgentMessages, romeAgentTraceBlocks, romeSessions } from "../schema.js";
 import { romeSessionKind, withSessionKind } from "../session-kind.js";
@@ -34,7 +35,43 @@ const modelName = sql<
 const turnEndBlockType = sql<string>`json_extract(${turnEndTraceBlocks.content}, '$.type')`;
 const turnEndBlockCondition = sql`${turnEndBlockType} = 'turn_end'`;
 const runStatus = sql<string | null>`json_extract(${turnEndTraceBlocks.content}, '$.status')`;
-const normalizedAgentName = sql<string>`coalesce(${romeSessions.agentName}, 'main')`;
+
+const pinnedToMain = sql`coalesce(json_type(${romeSessions.channelSettings}, '$.overrides.routing.agentName') = 'null', 0) = 1`;
+
+/**
+ * The agent that answers the row, with main as null like the stored column.
+ * It mirrors `answeringAgent` in sessions/query-service.ts, the rules in
+ * docs/architecture/channels.md#linked-agents.
+ */
+function answeringAgentName(linkedAgents?: Record<string, string>): SQL<string | null> {
+  const links = Object.entries(linkedAgents ?? {});
+  if (links.length === 0) return sql<string | null>`${romeSessions.agentName}`;
+  const onLinkedChannel = and(
+    sql`${romeSessionKind} = 'channel'`,
+    inArray(
+      romeSessions.sourceChannel,
+      links.map(([channel]) => channel),
+    ),
+  );
+  const linkedAgent = sql`case ${romeSessions.sourceChannel} ${sql.join(
+    links.map(
+      ([channel, agent]) =>
+        sql`when ${channel} then ${isCoreMainAgentId(agent) ? sql`null` : agent}`,
+    ),
+    sql` `,
+  )} end`;
+  // A null routing override is an explicit pin to main.
+  return sql<string | null>`case when ${onLinkedChannel} then case
+    when ${romeSessions.sourceThreadType} IS 'private' then ${linkedAgent}
+    when ${pinnedToMain} then null
+    when coalesce(${romeSessions.agentName}, 'main') in ('main', 'core:main') then ${linkedAgent}
+    else ${romeSessions.agentName} end else ${romeSessions.agentName} end`;
+}
+
+function normalizedAgentName(scope: SessionQueryStorageScope): SQL<string> {
+  return sql<string>`coalesce(${answeringAgentName(scope.linkedAgents)}, 'main')`;
+}
+
 const SQL_LIKE_ESCAPE = "\\";
 
 export interface SessionQueryStorageScope {
@@ -43,6 +80,9 @@ export interface SessionQueryStorageScope {
   sessionIds?: string[];
   types?: string[];
   agentNames?: string[];
+  /** Each linked channel's agent, so agent predicates and metrics read the
+   *  agent that answers a conversation rather than the stored one. */
+  linkedAgents?: Record<string, string>;
   ownerAgentNames?: string[];
   includeUninstalledOwners?: boolean;
   knownAgentNames?: string[];
@@ -108,6 +148,7 @@ function sessionPredicates(
   searchAgentNames: string[] = [],
 ): SQL[] {
   const predicates: SQL[] = [];
+  const agentName = normalizedAgentName(scope);
   if (scope.sessionIds) {
     predicates.push(
       scope.sessionIds.length > 0 ? inArray(romeSessions.id, scope.sessionIds) : sql`0 = 1`,
@@ -118,19 +159,19 @@ function sessionPredicates(
   }
   if (scope.agentNames) {
     predicates.push(
-      scope.agentNames.length > 0 ? inArray(normalizedAgentName, scope.agentNames) : sql`0 = 1`,
+      scope.agentNames.length > 0 ? inArray(agentName, scope.agentNames) : sql`0 = 1`,
     );
   }
   if (scope.ownerAgentNames || scope.includeUninstalledOwners) {
     const ownerPredicates: SQL[] = [];
     if (scope.ownerAgentNames?.length) {
-      ownerPredicates.push(inArray(normalizedAgentName, scope.ownerAgentNames));
+      ownerPredicates.push(inArray(agentName, scope.ownerAgentNames));
     }
     if (scope.includeUninstalledOwners) {
       const known = scope.knownAgentNames ?? [];
       ownerPredicates.push(
         known.length > 0
-          ? sql`${normalizedAgentName} NOT IN (${sql.join(
+          ? sql`${agentName} NOT IN (${sql.join(
               known.map((name) => sql`${name}`),
               sql`, `,
             )})`
@@ -164,7 +205,7 @@ function sessionPredicates(
       romeSessions.id,
       romeSessions.sourceThreadName,
       romeSessions.sourceThreadId,
-      romeSessions.agentName,
+      answeringAgentName(scope.linkedAgents),
       romeSessions.triggerName,
       romeSessions.triggerActionName,
       romeSessions.triggerExecutionId,
@@ -175,7 +216,7 @@ function sessionPredicates(
       (field) => sql`${field} LIKE ${pattern} ESCAPE ${SQL_LIKE_ESCAPE}`,
     );
     if (searchAgentNames.length > 0) {
-      searchPredicates.push(inArray(normalizedAgentName, searchAgentNames));
+      searchPredicates.push(inArray(agentName, searchAgentNames));
     }
     predicates.push(or(...searchPredicates)!);
   }
@@ -358,6 +399,7 @@ export class SessionQueryRepository {
 
   async queryRunAggregates(scope: SessionQueryStorageScope): Promise<RawSessionRunAggregate[]> {
     const interval = sql<number>`cast(${romeAgentMessages.createdAt} / 900 as integer)`;
+    const agentName = answeringAgentName(scope.linkedAgents);
     const rows = await this.db
       .select({
         sessionId: romeAgentMessages.sessionId,
@@ -393,7 +435,7 @@ export class SessionQueryRepository {
           ),
         modelProvider,
         modelName,
-        agentName: romeSessions.agentName,
+        agentName,
         sessionType: romeSessionKind,
         sourceChannel: romeSessions.sourceChannel,
         projectPath: romeSessions.projectPath,
@@ -414,7 +456,7 @@ export class SessionQueryRepository {
         interval,
         modelProvider,
         modelName,
-        romeSessions.agentName,
+        agentName,
         romeSessionKind,
         romeSessions.sourceChannel,
         romeSessions.projectPath,
