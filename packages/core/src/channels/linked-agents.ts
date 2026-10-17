@@ -2,7 +2,7 @@
 // Vocabulary: docs/concepts/messaging.md#channels. Invariants:
 // docs/architecture/channels.md#linked-agents.
 
-import type { ChannelMessageHookDeps } from "@rome-os/app-runtime";
+import type { ChannelMessageHookDeps, ConversationSettingsSnapshot } from "@rome-os/app-runtime";
 import { LINKABLE_SERVICES } from "@rome/api-types/linked-agents";
 import { isCoreMainAgentId } from "../apps/artifact-id.js";
 import type { ChannelRecordsRepository } from "../db/repositories/channel-records.js";
@@ -63,4 +63,43 @@ export function linkedAgentResolver(
     }
     return null;
   };
+}
+
+/**
+ * The agent that answers a conversation by the rules in
+ * docs/architecture/channels.md#linked-agents, or null when none does. `linked`
+ * is the {@link linkedAgentResolver} answer for the conversation's channel, and
+ * `choice` the conversation's stored agent, "main" for a pin to main. Main reads
+ * as "main". On a linked channel, a choice that `isLoaded` rejects reads as the
+ * linked agent, as the message handler falls back to it. Without `isLoaded`,
+ * every choice counts as loaded.
+ */
+export function answeringAgentOf(
+  linked: string | null | undefined,
+  choice: string | undefined,
+  threadType: "private" | "group",
+  isLoaded?: (agent: string) => boolean,
+): string | null {
+  if (linked === null) return null;
+  const followsLink =
+    linked !== undefined &&
+    (threadType === "private" ||
+      (choice !== undefined && !isCoreMainAgentId(choice) && isLoaded?.(choice) === false));
+  const agent = (followsLink ? undefined : choice) ?? linked ?? "main";
+  return isCoreMainAgentId(agent) ? "main" : agent;
+}
+
+/** The conversation's stored agent as {@link answeringAgentOf} takes it. A pin
+ *  to main can be stored as a null override, apart from no choice at all. */
+export function storedAgentChoice(
+  snapshot: Pick<ConversationSettingsSnapshot, "effective" | "overrides">,
+): string | undefined {
+  return snapshot.overrides.routing?.agentName === null
+    ? "main"
+    : (snapshot.effective.routing.agentName ?? undefined);
+}
+
+/** How an in-chat settings reply names the {@link answeringAgentOf} result. */
+export function describeAnsweringAgent(agent: string | null): string {
+  return agent ?? "none (this bot has no linked agent, or it is not loaded)";
 }
