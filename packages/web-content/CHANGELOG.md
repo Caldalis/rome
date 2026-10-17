@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.22](https://github.com/Caldalis/rome/compare/rome-web-components-v0.1.21...rome-web-components-v0.1.22) (2026-10-17)
+
+
+### Bug Fixes
+
+* **ui:** repair Mermaid diagram downloads ([#521](https://github.com/Caldalis/rome/issues/521)) ([a23a01a](https://github.com/Caldalis/rome/commit/a23a01a1dca75604791f766e303b2a736e98a5b6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @rome-os/ui bumped to 0.4.0
+
 ## [0.1.21](https://github.com/rome-os/rome/compare/rome-web-components-v0.1.20...rome-web-components-v0.1.21) (2026-10-12)
 
 
