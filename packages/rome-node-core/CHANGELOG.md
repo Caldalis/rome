@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.4](https://github.com/Caldalis/rome/compare/node-core-v0.1.3...node-core-v0.1.4) (2026-10-19)
+
+
+### Features
+
+* **node:** give each device a load chart and its own activity page ([#1061](https://github.com/Caldalis/rome/issues/1061)) ([68175f9](https://github.com/Caldalis/rome/commit/68175f902dd92691241f5e2837f7a49d5924e501))
+* **node:** record daemon activity and show it in Settings → Devices ([#1032](https://github.com/Caldalis/rome/issues/1032)) ([c3e6a8f](https://github.com/Caldalis/rome/commit/c3e6a8f7f0c79de276fa43acfabb511b75dfc62c))
+* **node:** send raw bytes between devices and add rome-node cp ([#821](https://github.com/Caldalis/rome/issues/821)) ([617a42a](https://github.com/Caldalis/rome/commit/617a42abd95dab06e7600ae4e7638dcdb27c5a8c))
+* **node:** share a WebSocket daemon and show device status in Settings ([#473](https://github.com/Caldalis/rome/issues/473)) ([b0cccab](https://github.com/Caldalis/rome/commit/b0cccab2336a7d214489d7ab7d1791a4a4bffbaf))
+* **node:** support device-code authorization ([#492](https://github.com/Caldalis/rome/issues/492)) ([b2a272d](https://github.com/Caldalis/rome/commit/b2a272db7a0d033bcc3e9ce3c199475f43fd8433))
+
 ## [0.1.3](https://github.com/rome-os/rome/compare/node-core-v0.1.2...node-core-v0.1.3) (2026-10-16)
 
 

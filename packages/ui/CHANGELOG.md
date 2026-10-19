@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.4.0](https://github.com/Caldalis/rome/compare/ui-v0.3.5...ui-v0.4.0) (2026-10-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ui:** replace the Body type role with Composer ([#389](https://github.com/Caldalis/rome/issues/389))
+
+### Features
+
+* message an agent from Cmd-K ([#502](https://github.com/Caldalis/rome/issues/502)) ([9298dc3](https://github.com/Caldalis/rome/commit/9298dc39ba17c079c2a26e0159b96e014bd3db14))
+* **ui:** add adaptive platform scales for shared controls ([#605](https://github.com/Caldalis/rome/issues/605)) ([4af451a](https://github.com/Caldalis/rome/commit/4af451a8c905cb0a63fbbcc4493f7ea4e8c1a072))
+* **ui:** add row, checkbox, and radio group primitives ([#367](https://github.com/Caldalis/rome/issues/367)) ([848376a](https://github.com/Caldalis/rome/commit/848376a9eebceb81341b25a323ea345c936ed200))
+* **ui:** add the page layout tier with List, and migrate two pages onto it ([#392](https://github.com/Caldalis/rome/issues/392)) ([be1b7a3](https://github.com/Caldalis/rome/commit/be1b7a368f204e66ac0db928e1733836d283b4a3))
+* **ui:** replace the Body type role with Composer ([#389](https://github.com/Caldalis/rome/issues/389)) ([5ade8d5](https://github.com/Caldalis/rome/commit/5ade8d51409d450eeb7c5e4cedbc87f285e81d05))
+* **ui:** retune Markdown rhythm for headings, tables, and lists ([#402](https://github.com/Caldalis/rome/issues/402)) ([cf2d106](https://github.com/Caldalis/rome/commit/cf2d106044a26b63c204d903b15f995e1d1f6de6))
+* **ui:** retune type weight, control scale, and focus edge ([#365](https://github.com/Caldalis/rome/issues/365)) ([d28d695](https://github.com/Caldalis/rome/commit/d28d695aa3ad58cd49ebcd44011da453502815a4))
+* **ui:** split chat and app canvas tokens ([#447](https://github.com/Caldalis/rome/issues/447)) ([d9a491f](https://github.com/Caldalis/rome/commit/d9a491f4a2bf8be5dabfb50824d976f19d0fc7f6))
+* **ui:** turn the layout tier into bodies on a Page skeleton, and migrate /settings ([#396](https://github.com/Caldalis/rome/issues/396)) ([6dbed23](https://github.com/Caldalis/rome/commit/6dbed234e140d2ea986c3b7dce1bd6dbfcdab7b1))
+* **web:** isolate pairing views and add Storybook previews ([#353](https://github.com/Caldalis/rome/issues/353)) ([3595492](https://github.com/Caldalis/rome/commit/35954927cd9958a2494c3cbc5854e1e5028ff9bb))
+* **web:** preview inline hex colors in chat ([#445](https://github.com/Caldalis/rome/issues/445)) ([3c3b4de](https://github.com/Caldalis/rome/commit/3c3b4de1850f0c7bf722af9b47dc5bce49279793))
+
+
+### Bug Fixes
+
+* **ui:** apply interface-polish rules to the component kit ([#820](https://github.com/Caldalis/rome/issues/820)) ([765a989](https://github.com/Caldalis/rome/commit/765a98963e1174a705c043baa7d560b6c18a3752))
+* **ui:** drop a markdown list's trailing empty items ([#542](https://github.com/Caldalis/rome/issues/542)) ([30d3213](https://github.com/Caldalis/rome/commit/30d32137cf52ee687c20975e4a170fcfb122b352))
+* **ui:** give fenced-block chrome its own row where hover does not exist ([#926](https://github.com/Caldalis/rome/issues/926)) ([488722b](https://github.com/Caldalis/rome/commit/488722b496dbd6933acce2b3a5f454cfb79979bd))
+* **ui:** keep Markdown table columns readable on narrow screens ([#782](https://github.com/Caldalis/rome/issues/782)) ([af34f20](https://github.com/Caldalis/rome/commit/af34f206994928e94c5a08836b93cc0aefb22315))
+* **ui:** let Dialog and Sheet content scroll inside an app's shadow root ([#777](https://github.com/Caldalis/rome/issues/777)) ([1367eb1](https://github.com/Caldalis/rome/commit/1367eb171e06512f70839566f935590f6acbb8af))
+* **ui:** let markdown tables grow to their full height ([#571](https://github.com/Caldalis/rome/issues/571)) ([b7b0dd4](https://github.com/Caldalis/rome/commit/b7b0dd47cd99165d4eb93c4049171ef470ba8920))
+* **ui:** optically center Button glyphs against their labels ([#823](https://github.com/Caldalis/rome/issues/823)) ([c202693](https://github.com/Caldalis/rome/commit/c2026939301b6ade4b79aa21ad0e90c584bbdfd7))
+* **ui:** pull the Markdown heading ladder back to 1.5x the body ([#410](https://github.com/Caldalis/rome/issues/410)) ([3a8b183](https://github.com/Caldalis/rome/commit/3a8b18344ea62d52a3314e668a52d88346af4a8e))
+* **ui:** repair Mermaid diagram downloads ([#521](https://github.com/Caldalis/rome/issues/521)) ([a23a01a](https://github.com/Caldalis/rome/commit/a23a01a1dca75604791f766e303b2a736e98a5b6))
+* **ui:** resolve the Markdown Mermaid theme once per page ([#507](https://github.com/Caldalis/rome/issues/507)) ([ad51f0e](https://github.com/Caldalis/rome/commit/ad51f0e5ef6ac026b9d526a4ea057c8eb593acac))
+* **ui:** show a chevron on clipped ends of scrolling PageNav and FilterChipGroup rows ([#748](https://github.com/Caldalis/rome/issues/748)) ([16aa640](https://github.com/Caldalis/rome/commit/16aa6404db5be16f5dbc0029c33da7bfa4db5cb9))
+* **ui:** size Markdown inline code to clear the compact line box ([#391](https://github.com/Caldalis/rome/issues/391)) ([2c64d74](https://github.com/Caldalis/rome/commit/2c64d7422dc7ba28e99bdd6056954010cdbdf0a5))
+* **web:** resolve Markdown file images through asset endpoints ([#472](https://github.com/Caldalis/rome/issues/472)) ([739b8aa](https://github.com/Caldalis/rome/commit/739b8aaf5101723ee1cf43219395d27bd55ec46d))
+
+
+### Performance Improvements
+
+* **ui:** load the mermaid, KaTeX and Shiki plugins only when a message needs them ([#794](https://github.com/Caldalis/rome/issues/794)) ([772fda4](https://github.com/Caldalis/rome/commit/772fda469f39f4bbce5257c1f0cfd5178a934123))
+
 ## [0.3.5](https://github.com/rome-os/rome/compare/ui-v0.3.4...ui-v0.3.5) (2026-10-12)
 
 
